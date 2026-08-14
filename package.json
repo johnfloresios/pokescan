@@ -4,6 +4,7 @@
   "main": "expo-router/entry",
   "scripts": {
     "check:scanner": "node scripts/check-scanner-deps.js",
+    "prestart": "npm run check:scanner",
     "postinstall": "node scripts/check-scanner-deps.js",
     "start": "expo start",
     "ios": "expo run:ios",
