@@ -124,8 +124,8 @@ function ScannerBeam() {
 }
 
 function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
-  const device = useCameraDevice('back');
-  const photoOutput = usePhotoOutput();
+  const device = useCameraDevice('back', { physicalDevices: ['wide-angle-camera'] });
+  const photoOutput = usePhotoOutput({ containerFormat: 'jpeg', qualityPrioritization: 'balanced', quality: .95 });
   const { scanText } = useTextRecognition({ language: 'latin', frameSkipThreshold: 5 });
   const [ready, setReady] = useState(false);
   const [active, setActive] = useState(true);
@@ -134,12 +134,17 @@ function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
   const stableFrames = useRef(0);
   const locked = useRef(false);
 
+  useEffect(() => {
+    if (!ready) return;
+    photoOutput.prepareSettings([{ flashMode: 'off', enableShutterSound: true }]).catch(() => undefined);
+  }, [photoOutput, ready]);
+
   const finishScan = useCallback(async (scan: ScanText) => {
     if (locked.current) return;
     locked.current = true;
     setStatus(`Locked: ${scan.query}`);
     try {
-      await photoOutput.capturePhotoToFile({}, {});
+      await photoOutput.capturePhotoToFile({ flashMode: 'off', enableShutterSound: true }, {});
       setActive(false);
       await onDetected(scan);
     } catch (e) {
@@ -177,26 +182,29 @@ function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
   });
 
   const manualCapture = async () => {
-    if (locked.current) return;
+    if (locked.current || !ready) return;
     locked.current = true;
     setStatus('Capturing photo…');
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      const { filePath } = await photoOutput.capturePhotoToFile({}, {});
+      const { filePath } = await photoOutput.capturePhotoToFile({ flashMode: 'off', enableShutterSound: true }, {});
       setActive(false);
       await onManualPhoto(filePath);
     } catch (e) {
       locked.current = false;
       setActive(true);
-      setStatus(e instanceof Error ? e.message : 'Could not capture photo');
+      const message = e instanceof Error ? e.message : 'Could not capture photo';
+      setStatus(message);
+      Alert.alert('Could not capture card', message);
     }
   };
 
   if (!device) return <View style={[s.cameraPage,s.center]}><ActivityIndicator color={C.cyan}/><Text style={s.cameraHelp}>Finding back camera…</Text></View>;
-  return <View style={s.cameraPage}><Camera style={StyleSheet.absoluteFill} device={device} isActive={active} outputs={[frameOutput, photoOutput]} onInitialized={() => setReady(true)} onError={(cameraError: any) => { setReady(false); setStatus(cameraError.message); }} />
-    <LinearGradient colors={['rgba(3,8,16,.78)', 'transparent', 'transparent', 'rgba(3,8,16,.9)']} locations={[0,.25,.7,1]} style={StyleSheet.absoluteFill} />
+  return <View style={s.cameraPage}><Camera style={StyleSheet.absoluteFill} device={device} isActive={active} outputs={[frameOutput, photoOutput]} zoom={device.neutralZoom} resizeMode="cover" onInitialized={() => setReady(true)} onError={(cameraError: any) => { setReady(false); setStatus(cameraError.message); }} />
+    <LinearGradient pointerEvents="none" colors={['rgba(3,8,16,.78)', 'transparent', 'transparent', 'rgba(3,8,16,.9)']} locations={[0,.25,.7,1]} style={StyleSheet.absoluteFill} />
     <SafeAreaView style={s.cameraSafe}><View style={s.cameraTop}><Pressable onPress={onClose} style={s.glassButton}><Feather name="x" size={23} color={C.white} /></Pressable><Text style={s.cameraTitle}>Scan your card</Text><View style={s.glassButton}><Feather name="zap" size={20} color={C.white} /></View></View>
       <View style={s.frameWrap}><View style={s.frame}><Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" /><ScannerBeam /></View><View style={s.hold}><MaterialCommunityIcons name="cards-outline" size={18} color={C.cyan} /><Text style={s.holdText}>NAME + BOTTOM NUMBER MUST BE CLEAR</Text></View></View>
-      <View><Text style={s.cameraHelp}>{error ? 'Scanner unavailable' : ready ? status : 'Starting live OCR…'}</Text>{!!error && <Text style={s.cameraError}>{error}</Text>}<View style={s.shutterRow}><View style={{width:48}} /><Pressable onPress={manualCapture} style={s.shutterOuter}><View style={s.shutterInner} /></Pressable><View style={s.autoBadge}><MaterialCommunityIcons name="line-scan" size={16} color={C.cyan}/><Text style={s.autoBadgeText}>LIVE</Text></View></View></View>
+      <View><Text style={s.cameraHelp}>{error ? 'Scanner unavailable' : ready ? status : 'Starting camera…'}</Text>{!!error && <Text style={s.cameraError}>{error}</Text>}<View style={s.shutterRow}><View style={{width:48}} /><Pressable disabled={!ready || locked.current} hitSlop={14} onPress={manualCapture} style={({pressed}) => [s.shutterOuter, (!ready || locked.current) && {opacity:.45}, pressed && {transform:[{scale:.94}]}]}><View style={s.shutterInner} /></Pressable><View style={s.autoBadge}><MaterialCommunityIcons name="line-scan" size={16} color={C.cyan}/><Text style={s.autoBadgeText}>LIVE</Text></View></View></View>
     </SafeAreaView>
   </View>;
 }

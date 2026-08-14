@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import { requireOptionalNativeModule } from 'expo-modules-core';
+import { PhotoRecognizer } from 'react-native-vision-camera-ocr-plus';
 
 type TextBox = { text: string; x: number; y: number; width: number; height: number };
 type CardBounds = { x: number; y: number; width: number; height: number };
@@ -103,14 +104,26 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
   if (Platform.OS !== 'ios') {
     throw new Error('Camera text recognition is currently available on iOS only.');
   }
-  if (!VisionRecognizer) {
-    throw new Error('Real scanning requires the pokeScan development build. Apple Vision is not available in Expo Go.');
+  let recognizedText = '';
+  let boxes: TextBox[] = [];
+  let cardDetected = false;
+  let cardBounds: CardBounds | undefined;
+  if (VisionRecognizer) {
+    try {
+      const result = await VisionRecognizer.recognize(uri.replace('file://', ''));
+      recognizedText = result.text;
+      boxes = result.boxes ?? [];
+      cardDetected = result.cardDetected === true;
+      cardBounds = result.cardBounds;
+    } catch { /* use ML Kit still-image OCR below */ }
   }
-
-  const result = await VisionRecognizer.recognize(uri.replace('file://', ''));
-  const text = String(result.text ?? '').trim();
+  if (!recognizedText.trim()) {
+    const result = await PhotoRecognizer({ uri, orientation: 'portrait' });
+    recognizedText = result.resultText;
+  }
+  const text = String(recognizedText ?? '').trim();
   const lines = text.split(/\r?\n/).map(normalizeCardLine).filter(Boolean);
-  const search = buildSearch(lines, result.boxes, result.cardBounds);
+  const search = buildSearch(lines, boxes, cardBounds);
 
   if (!text || !search.query) {
     throw new Error('No card name or collector number was detected. Move closer, avoid glare, and try again.');
@@ -119,10 +132,10 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
     text,
     lines,
     ...search,
-    cardDetected: result.cardDetected === true,
+    cardDetected,
     // Name + collector number is the authoritative capture gate. Rectangle
     // detection strengthens confidence, while a sufficiently rich OCR frame
     // permits cards whose foil, sleeve, or border hides one or more edges.
-    ready: Boolean(search.hints.name && search.hints.number) && (result.cardDetected === true || lines.length >= 4),
+    ready: Boolean(search.hints.name && search.hints.number) && (cardDetected || lines.length >= 4),
   };
 }
