@@ -12,8 +12,19 @@ public class CardTextRecognizerModule: Module {
       }
       let request = VNRecognizeTextRequest { request, error in
         if let error = error { promise.reject("VISION_ERROR", error.localizedDescription); return }
-        let lines = (request.results as? [VNRecognizedTextObservation])?.compactMap { $0.topCandidates(1).first?.string } ?? []
-        promise.resolve(["text": lines.joined(separator: "\n"), "lines": lines])
+        let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
+        let boxes: [[String: Any]] = observations.compactMap { observation in
+          guard let text = observation.topCandidates(1).first?.string else { return nil }
+          return [
+            "text": text,
+            "x": observation.boundingBox.origin.x,
+            "y": observation.boundingBox.origin.y,
+            "width": observation.boundingBox.width,
+            "height": observation.boundingBox.height
+          ]
+        }
+        let lines = boxes.compactMap { $0["text"] as? String }
+        promise.resolve(["text": lines.joined(separator: "\n"), "lines": lines, "boxes": boxes])
       }
       request.recognitionLevel = .accurate
       request.usesLanguageCorrection = true

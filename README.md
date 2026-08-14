@@ -55,7 +55,7 @@ After the development build is installed on the iPhone, start Metro with:
 npx expo start --dev-client --clear
 ```
 
-Open the installed **pokeScan development build**, not Expo Go. Point the camera at a card, align it within the frame, and press the shutter. pokeScan will:
+Open the installed **pokeScan development build**, not Expo Go. Point the camera at a card and align it within the frame. Once the camera is ready, pokeScan waits briefly for autofocus and captures automatically; no shutter press is required. The shutter remains available as a manual retry after an unsuccessful scan. pokeScan will:
 
 1. Capture the real camera image.
 2. Extract text locally with Apple Vision.
@@ -63,7 +63,7 @@ Open the installed **pokeScan development build**, not Expo Go. Point the camera
 4. Request live matches from PokéWallet.
 5. Display the returned images, details, and prices.
 
-The OCR layer includes Pokémon TCG terminology such as `ex`, `GX`, `VMAX`, and `VSTAR`, plus targeted correction for stylized suffixes and collector-number characters. It identifies the card name, full or partial collector number, set code, and HP. pokeScan tries progressively broader searches when an exact query has no results, then reranks matches using the detected number, name, set, and HP. For best results, fill most of the guide frame with the card, keep the name and collector number sharp, and tilt the card slightly if a foil surface creates glare.
+The OCR layer includes Pokémon TCG terminology such as `ex`, `GX`, `VMAX`, and `VSTAR`, plus targeted correction for stylized suffixes and collector-number characters. Apple Vision returns the position of every text box, so pokeScan prioritizes text near the top for the card name and text near the bottom for the collector number and set code. It tries progressively broader searches when an exact query has no results, then reranks matches using the detected number, name, set, HP, rarity, attacks, and matching description words. For best results, fill most of the guide frame with the card, keep both the top name and bottom collector number sharp, and tilt the card slightly if a foil surface creates glare.
 
 If `.env` is missing, the API key is rejected, Apple Vision cannot read the card, or PokéWallet returns an error, pokeScan displays the real error instead of fallback data.
 
@@ -144,4 +144,4 @@ npx eas-cli@latest submit --platform ios
 
 ## PokéWallet proxy requirements
 
-The proxy must attach the private `X-API-Key` header and pass through `/search`, `/cards/:id`, and `/images/:id`. It must preserve query strings and image content types. pokeScan now requires a configured API key or proxy and never returns built-in mock results.
+The proxy must attach the private `X-API-Key` header and pass through `/search`, `/cards/:id`, and `/images/:id`. It must preserve query strings and image content types. Card details display available evolution lineage, abilities, attacks, weakness, resistance, retreat cost, illustrator, and regulation mark returned by PokéWallet. pokeScan requires a configured API key or proxy and never returns built-in mock results.

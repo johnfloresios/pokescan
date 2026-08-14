@@ -19,7 +19,8 @@ function prices(raw: any): Price[] {
 }
 function mapCard(raw: any, i = 0): Card {
   const x = raw.card_info ?? raw;
-  return { id: raw.id, name: x.name ?? x.clean_name, setName: x.set_name ?? 'Unknown set', setCode: x.set_code ?? '', number: x.card_number ?? '—', rarity: x.rarity ?? 'Unknown', type: x.card_type ?? 'Pokémon', hp: x.hp, stage: x.stage, text: x.card_text, attacks: x.attacks, weakness: x.weakness, imageUrl: endpoint(`/images/${encodeURIComponent(raw.id)}?size=high`), prices: prices(raw), confidence: Math.max(.55, .96 - i * .08) };
+  const abilities = (x.abilities ?? x.ability ?? []).map ? (x.abilities ?? x.ability ?? []).map((ability: any) => typeof ability === 'string' ? ability : [ability.name, ability.text].filter(Boolean).join(' · ')) : [String(x.ability)];
+  return { id: raw.id, name: x.name ?? x.clean_name, setName: x.set_name ?? 'Unknown set', setCode: x.set_code ?? '', number: x.card_number ?? '—', rarity: x.rarity ?? 'Unknown', type: x.card_type ?? 'Pokémon', hp: x.hp, stage: x.stage, text: x.card_text, attacks: x.attacks, weakness: x.weakness, evolvesFrom: x.evolves_from ?? x.evolvesFrom ?? x.evolution_from, resistance: x.resistance, retreatCost: x.retreat_cost ?? x.retreatCost, illustrator: x.illustrator ?? x.artist, regulationMark: x.regulation_mark ?? x.regulationMark, abilities, imageUrl: endpoint(`/images/${encodeURIComponent(raw.id)}?size=high`), prices: prices(raw), confidence: Math.max(.55, .96 - i * .08) };
 }
 export async function searchCards(query: string): Promise<Card[]> {
   assertConfigured();
@@ -30,9 +31,11 @@ export async function searchCards(query: string): Promise<Card[]> {
 }
 export function rankCards(cards: Card[], hints: ScanHints): Card[] {
   const normalized = (value?: string) => value?.toLowerCase().replace(/[^a-z0-9]/g, '') ?? '';
+  const words = (value?: string) => new Set((value?.toLowerCase().match(/[a-z]{4,}/g) ?? []).filter(word => !['pokemon', 'basic', 'stage', 'damage', 'during', 'this', 'that', 'from', 'your'].includes(word)));
   const wantedNumber = normalized(hints.number?.split('/')[0]);
   const wantedName = normalized(hints.name);
   const wantedSet = normalized(hints.setCode);
+  const evidenceWords = words(hints.evidence);
   return cards.map((card, index) => {
     let score = 100 - index;
     if (wantedNumber && normalized(card.number.split('/')[0]) === wantedNumber) score += 80;
@@ -40,6 +43,9 @@ export function rankCards(cards: Card[], hints: ScanHints): Card[] {
     else if (wantedName && normalized(card.name).includes(wantedName)) score += 30;
     if (wantedSet && normalized(card.setCode) === wantedSet) score += 50;
     if (hints.hp && card.hp === hints.hp) score += 25;
+    const cardEvidence = [card.rarity, card.setName, card.text, card.evolvesFrom, ...(card.abilities ?? []), ...(card.attacks ?? [])].filter(Boolean).join(' ');
+    const evidenceMatches = [...words(cardEvidence)].filter(word => evidenceWords.has(word)).length;
+    score += Math.min(30, evidenceMatches * 5);
     return { card, score };
   }).sort((a, b) => b.score - a.score).map(({ card }, index) => ({
     ...card,

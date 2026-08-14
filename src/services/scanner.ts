@@ -1,9 +1,10 @@
 import { Platform } from 'react-native';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 
-export type ScanHints = { name?: string; number?: string; setCode?: string; hp?: string };
+type TextBox = { text: string; x: number; y: number; width: number; height: number };
+export type ScanHints = { name?: string; number?: string; setCode?: string; hp?: string; evidence?: string };
 export type ScanText = { text: string; lines: string[]; query: string; queries: string[]; hints: ScanHints };
-const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string }> }>('CardTextRecognizer');
+const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string; boxes?: TextBox[] }> }>('CardTextRecognizer');
 
 const normalizeCardLine = (line: string) => {
   let value = line.replace(/\s+/g, ' ').trim();
@@ -22,18 +23,27 @@ const normalizeCardLine = (line: string) => {
   return value;
 };
 
-const buildSearch = (lines: string[]) => {
+const buildSearch = (lines: string[], boxes: TextBox[] = []) => {
   const clean = lines.map(normalizeCardLine).filter(Boolean);
-  const fractionLine = clean.find(x => /\b\d{1,3}\s*\/\s*\d{1,3}\b/.test(x));
+  const normalizedBoxes = boxes.map(box => ({ ...box, text: normalizeCardLine(box.text) })).filter(box => box.text);
+  const minY = normalizedBoxes.length ? Math.min(...normalizedBoxes.map(box => box.y)) : 0;
+  const maxY = normalizedBoxes.length ? Math.max(...normalizedBoxes.map(box => box.y + box.height)) : 1;
+  const verticalSpan = Math.max(.01, maxY - minY);
+  const relativeY = (box: TextBox) => (box.y - minY) / verticalSpan;
+  const topLines = normalizedBoxes.filter(box => relativeY(box) >= .58).sort((a, b) => b.y - a.y).map(box => box.text);
+  const spatialBottomLines = normalizedBoxes.filter(box => relativeY(box) <= .42).sort((a, b) => b.y - a.y).map(box => box.text);
+  const bottomLines = spatialBottomLines.length ? spatialBottomLines : clean.slice(Math.max(1, Math.floor(clean.length * 0.55)));
+
+  const fractionLine = [...bottomLines, ...clean].find(x => /\b\d{1,3}\s*\/\s*\d{1,3}\b/.test(x));
   const fraction = fractionLine?.match(/\d{1,3}\s*\/\s*\d{1,3}/)?.[0];
   const ignored = /^(basic|stage\s*\d*|trainer|item|supporter|energy|ability|weakness|resistance|retreat|hp\s*\d+|illus\.|©)/i;
-  const name = clean.find(x => /^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .:'’\-]{2,32}$/.test(x) && !ignored.test(x));
+  const validName = (value: string) => /^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .:'’\-]{2,32}$/.test(value) && !ignored.test(value);
+  const name = topLines.find(validName) ?? clean.find(validName);
 
   // On some full-art cards Vision sees only the card's unique number ("196")
   // rather than the entire printed fraction ("196/165"). Collector numbers
   // are printed near the bottom, so only consider standalone values late in
   // the OCR order and reject values labeled as HP, damage, weakness, or rules.
-  const bottomLines = clean.slice(Math.max(1, Math.floor(clean.length * 0.55)));
   const serial = [...bottomLines].reverse().map(line => {
     if (/\b(?:hp|damage|weakness|resistance|retreat|rule)\b/i.test(line)) return undefined;
     return line.match(/^(?:no\.?\s*|#\s*)?(\d{2,3})(?:\s*[A-Z]{1,3})?$/i)?.[1];
@@ -56,7 +66,7 @@ const buildSearch = (lines: string[]) => {
     [number],
   ].map(parts => parts.filter(Boolean).join(' ')).filter(Boolean);
   const queries = [...new Set(candidates)];
-  return { query: queries[0] ?? '', queries, hints: { name, number, setCode, hp } };
+  return { query: queries[0] ?? '', queries, hints: { name, number, setCode, hp, evidence: clean.join(' ') } };
 };
 
 export async function recognizeCard(uri: string): Promise<ScanText> {
@@ -70,7 +80,7 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
   const result = await VisionRecognizer.recognize(uri.replace('file://', ''));
   const text = String(result.text ?? '').trim();
   const lines = text.split(/\r?\n/).map(normalizeCardLine).filter(Boolean);
-  const search = buildSearch(lines);
+  const search = buildSearch(lines, result.boxes);
 
   if (!text || !search.query) {
     throw new Error('No card name or collector number was detected. Move closer, avoid glare, and try again.');
