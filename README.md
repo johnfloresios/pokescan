@@ -11,6 +11,12 @@ npm install
 cp .env.example .env
 ```
 
+The Expo Router runtime also requires the SDK-matched `expo-linking` and `expo-constants` packages. They are included in `package.json`; if an existing checkout reports either package missing, run:
+
+```bash
+npx expo install expo-linking expo-constants
+```
+
 For local testing, add your PokéWallet development key to `.env`:
 
 ```env
