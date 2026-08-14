@@ -8,7 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Card } from '@/types';
 import { C, shadow } from '@/theme';
-import { recognizeCard } from '@/services/scanner';
+import { recognizeCard, ScanText } from '@/services/scanner';
 import { cardImageSource, getCard, rankCards, searchCards } from '@/services/pokewallet';
 
 type Screen = 'home' | 'camera' | 'analyzing' | 'matches' | 'detail';
@@ -24,27 +24,61 @@ export default function App() {
   const camera = useRef<CameraView>(null);
   const captureInProgress = useRef(false);
 
+  const searchWithScan = async (actual: string, scan?: ScanText) => {
+    setError(''); setScreen('analyzing'); setQuery(actual);
+    let cards: Card[] = [];
+    const candidates = (scan?.queries ?? [actual]).slice(0, 4);
+    for (const candidate of candidates) {
+      const found = await searchCards(candidate);
+      cards = [...cards, ...found.filter(item => !cards.some(existing => existing.id === item.id))];
+      const wantedNumber = scan?.hints.number?.split('/')[0].replace(/^0+/, '');
+      const hasExactNumber = wantedNumber && cards.some(card => card.number.split('/')[0].replace(/^0+/, '') === wantedNumber);
+      if (!scan || hasExactNumber || (cards.length > 0 && !wantedNumber)) break;
+    }
+    setMatches(scan ? rankCards(cards, scan.hints) : cards); setScreen('matches');
+  };
+
   const lookup = async (q: string, uri?: string) => {
     try {
-      setError(''); setScreen('analyzing');
+      setError('');
+      if (uri) setScreen('analyzing');
       const scan = uri ? await recognizeCard(uri) : undefined;
       const actual = scan?.query ?? q.trim();
-      setQuery(actual);
-      let cards: Card[] = [];
-      const candidates = (scan?.queries ?? [actual]).slice(0, 4);
-      for (const candidate of candidates) {
-        const found = await searchCards(candidate);
-        cards = [...cards, ...found.filter(item => !cards.some(existing => existing.id === item.id))];
-        const wantedNumber = scan?.hints.number?.split('/')[0].replace(/^0+/, '');
-        const hasExactNumber = wantedNumber && cards.some(card => card.number.split('/')[0].replace(/^0+/, '') === wantedNumber);
-        if (!scan || hasExactNumber || (cards.length > 0 && !wantedNumber)) break;
-      }
-      setMatches(scan ? rankCards(cards, scan.hints) : cards); setScreen('matches');
+      await searchWithScan(actual, scan);
     } catch (e) { setError(e instanceof Error ? e.message : 'Something went wrong.'); setScreen(uri ? 'camera' : 'home'); }
   };
   const openCamera = async () => {
     if (!permission?.granted) { const result = await askPermission(); if (!result.granted) return; }
-    setScreen('camera');
+    setError(''); setScreen('camera');
+  };
+  const probe = async () => {
+    if (!camera.current || captureInProgress.current) return false;
+    captureInProgress.current = true;
+    try {
+      const photo = await camera.current.takePictureAsync({ quality: .88, skipProcessing: false, shutterSound: false });
+      if (!photo?.uri) return false;
+      let scan: ScanText;
+      try {
+        scan = await recognizeCard(photo.uri);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : '';
+        if (message.includes('development build') || message.includes('iOS only')) setError(message);
+        return false;
+      }
+      if (!scan.ready) return false;
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      try {
+        await searchWithScan(scan.query, scan);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'PokéWallet search failed.');
+        setScreen('camera');
+      }
+      return true;
+    } catch {
+      return false;
+    } finally {
+      captureInProgress.current = false;
+    }
   };
   const capture = async () => {
     if (!camera.current || captureInProgress.current) return;
@@ -64,7 +98,7 @@ export default function App() {
     try { setSelected(await getCard(card.id)); } catch { /* search data is still useful */ }
   };
 
-  if (screen === 'camera') return <CameraScreen cameraRef={camera} onClose={() => setScreen('home')} onCapture={capture} error={error} />;
+  if (screen === 'camera') return <CameraScreen cameraRef={camera} onClose={() => setScreen('home')} onCapture={capture} onProbe={probe} error={error} />;
   if (screen === 'analyzing') return <Analyzing />;
   if (screen === 'matches') return <Matches query={query} cards={matches} onBack={() => setScreen('home')} onSelect={choose} onSearch={lookup} />;
   if (screen === 'detail' && selected) return <Detail card={selected} onBack={() => setScreen('matches')} />;
@@ -105,29 +139,46 @@ function Home({ onScan, onSearch, error }: { onScan: () => void; onSearch: (q: s
 }
 function Stat({ icon, value, label }: { icon: any; value: string; label: string }) { return <View style={s.stat}><Feather name={icon} size={17} color={C.cyan} /><Text style={s.statValue}>{value}</Text><Text style={s.statLabel}>{label}</Text></View>; }
 
-function CameraScreen({ cameraRef, onClose, onCapture, error }: any) {
+function ScannerBeam() {
+  const progress = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const animation = Animated.loop(Animated.sequence([
+      Animated.timing(progress, { toValue: 1, duration: 1750, useNativeDriver: true }),
+      Animated.timing(progress, { toValue: 0, duration: 1750, useNativeDriver: true }),
+    ]));
+    animation.start(); return () => animation.stop();
+  }, [progress]);
+  return <Animated.View style={[s.scanLine, { transform: [{ translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [8, (W - 58) * 88 / 63 - 18] }) }] }]}><LinearGradient colors={['transparent', C.cyan, C.white, C.cyan, 'transparent']} start={{x:0,y:0}} end={{x:1,y:0}} style={StyleSheet.absoluteFill}/></Animated.View>;
+}
+
+function CameraScreen({ cameraRef, onClose, onCapture, onProbe, error }: any) {
   const [ready, setReady] = useState(false);
-  const [autoScanning, setAutoScanning] = useState(false);
-  const autoStarted = useRef(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    if (!ready || error || autoStarted.current) return;
-    autoStarted.current = true;
-    setAutoScanning(true);
-    const timer = setTimeout(() => onCapture(), 1600);
-    return () => clearTimeout(timer);
-  }, [ready, error, onCapture]);
+    if (!ready || error) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const scan = async () => {
+      if (cancelled) return;
+      const found = await onProbe();
+      if (cancelled || found) return;
+      setAttempt(value => value + 1);
+      timer = setTimeout(scan, 900);
+    };
+    timer = setTimeout(scan, 1100);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [ready, error, onProbe]);
 
   const retry = () => {
-    setAutoScanning(true);
     onCapture();
   };
 
   return <View style={s.cameraPage}><CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" autofocus="on" onCameraReady={() => setReady(true)} />
     <LinearGradient colors={['rgba(3,8,16,.78)', 'transparent', 'transparent', 'rgba(3,8,16,.9)']} locations={[0,.25,.7,1]} style={StyleSheet.absoluteFill} />
     <SafeAreaView style={s.cameraSafe}><View style={s.cameraTop}><Pressable onPress={onClose} style={s.glassButton}><Feather name="x" size={23} color={C.white} /></Pressable><Text style={s.cameraTitle}>Scan your card</Text><View style={s.glassButton}><Feather name="zap" size={20} color={C.white} /></View></View>
-      <View style={s.frameWrap}><View style={s.frame}><Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" /><View style={s.scanLine} /></View><View style={s.hold}><MaterialCommunityIcons name="cards-outline" size={18} color={C.yellow} /><Text style={s.holdText}>ALIGN CARD WITHIN FRAME</Text></View></View>
-      <View><Text style={s.cameraHelp}>{error ? 'Adjust the card and try again' : autoScanning ? 'Hold steady · Capturing automatically…' : 'Focusing on your card…'}</Text>{!!error && <Text style={s.cameraError}>{error}</Text>}<View style={s.shutterRow}><View style={{width:48}} /><Pressable onPress={retry} style={s.shutterOuter}><View style={s.shutterInner} /></Pressable><View style={s.autoBadge}><MaterialCommunityIcons name="auto-fix" size={16} color={C.cyan}/><Text style={s.autoBadgeText}>AUTO</Text></View></View></View>
+      <View style={s.frameWrap}><View style={s.frame}><Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" /><ScannerBeam /></View><View style={s.hold}><MaterialCommunityIcons name="cards-outline" size={18} color={C.cyan} /><Text style={s.holdText}>NAME + BOTTOM NUMBER MUST BE CLEAR</Text></View></View>
+      <View><Text style={s.cameraHelp}>{error ? 'Scanner unavailable' : ready ? `Detecting card${'.'.repeat(attempt % 4)}` : 'Starting camera…'}</Text>{!!error && <Text style={s.cameraError}>{error}</Text>}<View style={s.shutterRow}><View style={{width:48}} /><Pressable onPress={retry} style={s.shutterOuter}><View style={s.shutterInner} /></Pressable><View style={s.autoBadge}><MaterialCommunityIcons name="line-scan" size={16} color={C.cyan}/><Text style={s.autoBadgeText}>LIVE</Text></View></View></View>
     </SafeAreaView>
   </View>;
 }
@@ -160,7 +211,7 @@ const W=Dimensions.get('window').width;
 const s=StyleSheet.create({
   page:{flex:1,backgroundColor:C.ink},safe:{flex:1},center:{alignItems:'center',justifyContent:'center',padding:32},top:{height:70,paddingHorizontal:22,flexDirection:'row',alignItems:'center',justifyContent:'space-between'},brand:{flexDirection:'row',alignItems:'center',gap:9},brandMark:{width:28,height:28,borderRadius:14,backgroundColor:C.red,borderWidth:3,borderColor:C.white,alignItems:'center',justifyContent:'center',overflow:'hidden'},brandDot:{width:8,height:8,borderRadius:4,backgroundColor:C.white,borderWidth:2,borderColor:C.ink},brandText:{fontFamily:'Inter_800ExtraBold',fontSize:21,color:C.white,letterSpacing:-.8},avatar:{width:38,height:38,borderRadius:19,backgroundColor:C.panel2,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:C.line},
   homeScroll:{padding:22,paddingBottom:40},heroCopy:{marginTop:22,marginBottom:30},eyebrow:{flexDirection:'row',alignItems:'center',gap:8,marginBottom:15},liveDot:{width:7,height:7,borderRadius:4,backgroundColor:C.green},eyebrowText:{fontFamily:'Inter_700Bold',fontSize:10,color:C.green,letterSpacing:1.5},heroTitle:{fontFamily:'Inter_800ExtraBold',fontSize:42,lineHeight:47,color:C.white,letterSpacing:-1.8},heroAccent:{color:C.yellow},heroSub:{fontFamily:'Inter_400Regular',fontSize:16,lineHeight:24,color:C.muted,marginTop:15,maxWidth:340},scanCard:{borderRadius:24,overflow:'hidden',...shadow},scanGradient:{minHeight:154,padding:22,flexDirection:'row',alignItems:'center',gap:16,overflow:'hidden'},orbOne:{position:'absolute',width:170,height:170,borderRadius:85,backgroundColor:'rgba(68,215,255,.12)',right:-35,top:-85},orbTwo:{position:'absolute',width:90,height:90,borderRadius:45,borderWidth:18,borderColor:'rgba(255,255,255,.06)',left:140,bottom:-55},scanIcon:{width:66,height:66,borderRadius:22,backgroundColor:C.yellow,alignItems:'center',justifyContent:'center'},scanTitle:{fontFamily:'Inter_700Bold',fontSize:22,color:C.white},scanSub:{fontFamily:'Inter_400Regular',fontSize:12,color:'#BBD3FF',marginTop:5},circleArrow:{width:42,height:42,borderRadius:21,borderWidth:1,borderColor:'rgba(255,255,255,.25)',alignItems:'center',justifyContent:'center'},divider:{flexDirection:'row',alignItems:'center',gap:12,marginVertical:24},divLine:{height:1,backgroundColor:C.line,flex:1},or:{fontFamily:'Inter_600SemiBold',fontSize:9,color:C.muted,letterSpacing:1.1},searchBox:{height:58,borderRadius:17,borderWidth:1,borderColor:C.line,backgroundColor:C.panel,flexDirection:'row',alignItems:'center',paddingLeft:17},input:{flex:1,color:C.white,fontFamily:'Inter_500Medium',fontSize:14,paddingHorizontal:12},searchGo:{width:40,height:40,borderRadius:12,backgroundColor:C.yellow,alignItems:'center',justifyContent:'center',marginRight:8},error:{color:C.red,fontFamily:'Inter_500Medium',fontSize:12,marginTop:10},stats:{flexDirection:'row',alignItems:'center',justifyContent:'space-around',marginTop:30},stat:{alignItems:'center',gap:4,flex:1},statValue:{fontFamily:'Inter_700Bold',fontSize:15,color:C.white},statLabel:{fontFamily:'Inter_400Regular',fontSize:9,color:C.muted},statLine:{width:1,height:38,backgroundColor:C.line},tip:{marginTop:28,padding:15,backgroundColor:'#111F31',borderRadius:16,flexDirection:'row',alignItems:'center',gap:12,borderWidth:1,borderColor:C.line},bulb:{width:34,height:34,borderRadius:11,backgroundColor:'rgba(255,213,61,.1)',alignItems:'center',justifyContent:'center'},tipText:{flex:1,fontFamily:'Inter_400Regular',fontSize:11.5,lineHeight:18,color:C.muted},
-  cameraPage:{flex:1,backgroundColor:'#000'},cameraSafe:{flex:1,justifyContent:'space-between',padding:18},cameraTop:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},glassButton:{width:44,height:44,borderRadius:22,backgroundColor:'rgba(8,17,31,.55)',borderWidth:1,borderColor:'rgba(255,255,255,.18)',alignItems:'center',justifyContent:'center'},cameraTitle:{fontFamily:'Inter_700Bold',fontSize:17,color:C.white},frameWrap:{alignItems:'center'},frame:{width:W-58,aspectRatio:63/88,position:'relative'},corner:{position:'absolute',width:42,height:42,borderColor:C.yellow,borderRadius:10},scanLine:{position:'absolute',left:12,right:12,top:'49%',height:2,backgroundColor:C.yellow,shadowColor:C.yellow,shadowOpacity:1,shadowRadius:10},hold:{flexDirection:'row',gap:8,alignItems:'center',backgroundColor:'rgba(8,17,31,.7)',paddingVertical:9,paddingHorizontal:14,borderRadius:20,marginTop:18},holdText:{fontFamily:'Inter_700Bold',fontSize:9,color:C.white,letterSpacing:1.3},cameraHelp:{fontFamily:'Inter_500Medium',fontSize:13,color:C.white,textAlign:'center',marginBottom:12},cameraError:{color:'#FFD1D5',textAlign:'center',fontFamily:'Inter_500Medium',fontSize:11,marginBottom:8},shutterRow:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingHorizontal:28,paddingBottom:12},shutterOuter:{width:78,height:78,borderRadius:39,borderWidth:4,borderColor:C.white,alignItems:'center',justifyContent:'center'},shutterInner:{width:62,height:62,borderRadius:31,backgroundColor:C.yellow},autoBadge:{width:48,height:48,borderRadius:24,backgroundColor:'rgba(8,17,31,.72)',borderWidth:1,borderColor:'rgba(34,211,238,.35)',alignItems:'center',justifyContent:'center'},autoBadgeText:{fontFamily:'Inter_700Bold',fontSize:7,color:C.cyan,letterSpacing:.8,marginTop:1},analyzeIcon:{width:116,height:116,borderRadius:38,backgroundColor:C.panel,borderWidth:1,borderColor:C.line,alignItems:'center',justifyContent:'center'},analyzeTitle:{fontFamily:'Inter_700Bold',fontSize:23,color:C.white,marginTop:20},analyzeSub:{fontFamily:'Inter_400Regular',fontSize:13,color:C.muted,textAlign:'center',marginTop:8},
+  cameraPage:{flex:1,backgroundColor:'#000'},cameraSafe:{flex:1,justifyContent:'space-between',padding:18},cameraTop:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},glassButton:{width:44,height:44,borderRadius:22,backgroundColor:'rgba(8,17,31,.55)',borderWidth:1,borderColor:'rgba(255,255,255,.18)',alignItems:'center',justifyContent:'center'},cameraTitle:{fontFamily:'Inter_700Bold',fontSize:17,color:C.white},frameWrap:{alignItems:'center'},frame:{width:W-58,aspectRatio:63/88,position:'relative',overflow:'hidden'},corner:{position:'absolute',width:42,height:42,borderColor:C.yellow,borderRadius:10,zIndex:2},scanLine:{position:'absolute',left:12,right:12,top:0,height:3,backgroundColor:C.cyan,shadowColor:C.cyan,shadowOpacity:1,shadowRadius:12,elevation:5},hold:{flexDirection:'row',gap:8,alignItems:'center',backgroundColor:'rgba(8,17,31,.7)',paddingVertical:9,paddingHorizontal:14,borderRadius:20,marginTop:18},holdText:{fontFamily:'Inter_700Bold',fontSize:9,color:C.white,letterSpacing:1.3},cameraHelp:{fontFamily:'Inter_500Medium',fontSize:13,color:C.white,textAlign:'center',marginBottom:12},cameraError:{color:'#FFD1D5',textAlign:'center',fontFamily:'Inter_500Medium',fontSize:11,marginBottom:8},shutterRow:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingHorizontal:28,paddingBottom:12},shutterOuter:{width:78,height:78,borderRadius:39,borderWidth:4,borderColor:C.white,alignItems:'center',justifyContent:'center'},shutterInner:{width:62,height:62,borderRadius:31,backgroundColor:C.yellow},autoBadge:{width:48,height:48,borderRadius:24,backgroundColor:'rgba(8,17,31,.72)',borderWidth:1,borderColor:'rgba(34,211,238,.35)',alignItems:'center',justifyContent:'center'},autoBadgeText:{fontFamily:'Inter_700Bold',fontSize:7,color:C.cyan,letterSpacing:.8,marginTop:1},analyzeIcon:{width:116,height:116,borderRadius:38,backgroundColor:C.panel,borderWidth:1,borderColor:C.line,alignItems:'center',justifyContent:'center'},analyzeTitle:{fontFamily:'Inter_700Bold',fontSize:23,color:C.white,marginTop:20},analyzeSub:{fontFamily:'Inter_400Regular',fontSize:13,color:C.muted,textAlign:'center',marginTop:8},
   resultTop:{paddingHorizontal:20,paddingVertical:16,flexDirection:'row',alignItems:'center',gap:16,borderBottomWidth:1,borderColor:C.line},back:{width:42,height:42,borderRadius:15,backgroundColor:C.panel2,alignItems:'center',justifyContent:'center'},smallHead:{fontFamily:'Inter_700Bold',fontSize:8,color:C.green,letterSpacing:1.3},resultTitle:{fontFamily:'Inter_700Bold',fontSize:20,color:C.white,marginTop:2},resultsScroll:{padding:20,paddingBottom:50},detected:{backgroundColor:C.panel,padding:15,borderRadius:17,borderWidth:1,borderColor:C.line,flexDirection:'row',alignItems:'center',gap:12},detectedIcon:{width:34,height:34,borderRadius:12,backgroundColor:'rgba(69,212,131,.1)',alignItems:'center',justifyContent:'center'},detectedLabel:{fontFamily:'Inter_700Bold',fontSize:8,color:C.muted,letterSpacing:1.2},detectedText:{fontFamily:'Inter_600SemiBold',fontSize:14,color:C.white,marginTop:3},found:{fontFamily:'Inter_400Regular',fontSize:11,color:C.muted,marginVertical:18},match:{minHeight:174,borderRadius:20,backgroundColor:C.panel,marginBottom:14,padding:13,flexDirection:'row',alignItems:'center',gap:13,borderWidth:1,borderColor:C.line,overflow:'hidden'},bestMatch:{borderColor:'#416DB4',backgroundColor:'#12233A'},bestTag:{position:'absolute',top:0,right:0,backgroundColor:C.yellow,paddingVertical:5,paddingHorizontal:9,borderBottomLeftRadius:10,flexDirection:'row',gap:4,alignItems:'center'},bestText:{fontFamily:'Inter_800ExtraBold',fontSize:7,color:C.ink,letterSpacing:.7},matchImg:{width:93,height:130,borderRadius:7,backgroundColor:C.panel2},matchInfo:{flex:1},matchName:{fontFamily:'Inter_700Bold',fontSize:17,color:C.white},matchSet:{fontFamily:'Inter_400Regular',fontSize:10.5,color:C.muted,marginTop:4},pills:{flexDirection:'row',gap:5,marginTop:10},pill:{fontFamily:'Inter_600SemiBold',fontSize:8,color:'#AFC0D7',paddingVertical:4,paddingHorizontal:7,backgroundColor:C.panel2,borderRadius:6,overflow:'hidden'},matchBottom:{flexDirection:'row',alignItems:'flex-end',justifyContent:'space-between',marginTop:12},marketLabel:{fontFamily:'Inter_700Bold',fontSize:7,color:C.muted,letterSpacing:.8},matchPrice:{fontFamily:'Inter_700Bold',fontSize:20,color:C.yellow,marginTop:1},confidence:{backgroundColor:'rgba(69,212,131,.1)',borderRadius:8,padding:5},confText:{fontFamily:'Inter_600SemiBold',fontSize:8,color:C.green},empty:{alignItems:'center',padding:50},emptyTitle:{fontFamily:'Inter_700Bold',fontSize:18,color:C.white,marginTop:12},emptySub:{fontFamily:'Inter_400Regular',fontSize:12,color:C.muted,marginTop:5},
   detailHero:{height:500,paddingHorizontal:18},detailTop:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingTop:8},detailNav:{fontFamily:'Inter_700Bold',fontSize:16,color:C.white},cardGlow:{position:'absolute',width:280,height:280,borderRadius:140,backgroundColor:'rgba(68,215,255,.14)',alignSelf:'center',top:115},heroCard:{width:270,height:378,alignSelf:'center',marginTop:25},detailBody:{padding:22,paddingBottom:45,marginTop:-4,backgroundColor:C.ink,borderTopLeftRadius:28,borderTopRightRadius:28},detailHeading:{flexDirection:'row',alignItems:'center'},detailName:{fontFamily:'Inter_800ExtraBold',fontSize:29,color:C.white,letterSpacing:-.8},detailSet:{fontFamily:'Inter_400Regular',fontSize:12,color:C.muted,marginTop:6},typeBadge:{flexDirection:'row',alignItems:'center',gap:5,backgroundColor:C.yellow,paddingVertical:8,paddingHorizontal:11,borderRadius:12},typeText:{fontFamily:'Inter_700Bold',fontSize:9,color:C.ink},priceCard:{marginTop:24,borderRadius:20,backgroundColor:C.panel,padding:19,borderWidth:1,borderColor:C.line,flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'},valueLabel:{fontFamily:'Inter_700Bold',fontSize:8,color:C.muted,letterSpacing:1.1},bigPrice:{fontFamily:'Inter_800ExtraBold',fontSize:36,color:C.white,letterSpacing:-1,marginTop:3},updated:{fontFamily:'Inter_400Regular',fontSize:9,color:C.muted,marginTop:3},gain:{flexDirection:'row',gap:5,alignItems:'center',backgroundColor:'rgba(69,212,131,.1)',paddingVertical:6,paddingHorizontal:9,borderRadius:10},gainText:{fontFamily:'Inter_700Bold',fontSize:10,color:C.green},range:{flexDirection:'row',backgroundColor:'#0C1727',borderRadius:15,marginTop:10,paddingVertical:13,alignItems:'center'},rangeItem:{flex:1,alignItems:'center'},rangeLabel:{fontFamily:'Inter_500Medium',fontSize:9,color:C.muted},rangeValue:{fontFamily:'Inter_700Bold',fontSize:14,color:C.white,marginTop:3},rangeLine:{width:1,height:28,backgroundColor:C.line},sectionTitle:{fontFamily:'Inter_700Bold',fontSize:9,color:C.muted,letterSpacing:1.3,marginTop:27,marginBottom:11},infoGrid:{flexDirection:'row',flexWrap:'wrap',gap:9},info:{width:'48.5%',backgroundColor:C.panel,padding:14,borderRadius:14,borderWidth:1,borderColor:C.line},infoLabel:{fontFamily:'Inter_700Bold',fontSize:8,color:C.muted,letterSpacing:.8},infoValue:{fontFamily:'Inter_600SemiBold',fontSize:13,color:C.white,marginTop:5},detailsBox:{backgroundColor:C.panel,borderRadius:16,borderWidth:1,borderColor:C.line,padding:15},ability:{marginBottom:14,paddingBottom:13,borderBottomWidth:1,borderColor:C.line},abilityBadge:{alignSelf:'flex-start',backgroundColor:'rgba(244,63,140,.15)',paddingVertical:4,paddingHorizontal:7,borderRadius:6,marginBottom:7},abilityBadgeText:{fontFamily:'Inter_800ExtraBold',fontSize:7,color:C.red,letterSpacing:.8},abilityText:{fontFamily:'Inter_600SemiBold',fontSize:11,color:C.white,lineHeight:17},attack:{flexDirection:'row',alignItems:'center',gap:9,marginBottom:10},energyDot:{width:18,height:18,borderRadius:9,backgroundColor:C.yellow,borderWidth:4,borderColor:'#7C6515'},attackText:{fontFamily:'Inter_600SemiBold',fontSize:12,color:C.white},cardText:{fontFamily:'Inter_400Regular',fontSize:11,color:C.muted,lineHeight:17,marginTop:4},combatRow:{marginTop:12,paddingTop:12,borderTopWidth:1,borderColor:C.line},weakness:{fontFamily:'Inter_500Medium',fontSize:10,color:'#C9D5E4',marginBottom:6},collection:{height:56,borderRadius:16,backgroundColor:C.yellow,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:9,marginTop:26},collectionText:{fontFamily:'Inter_700Bold',fontSize:14,color:C.ink},disclaimer:{fontFamily:'Inter_400Regular',fontSize:9,color:C.muted,textAlign:'center',lineHeight:14,marginTop:14}
 });

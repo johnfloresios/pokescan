@@ -3,8 +3,8 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
 
 type TextBox = { text: string; x: number; y: number; width: number; height: number };
 export type ScanHints = { name?: string; number?: string; setCode?: string; hp?: string; evidence?: string };
-export type ScanText = { text: string; lines: string[]; query: string; queries: string[]; hints: ScanHints };
-const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string; boxes?: TextBox[] }> }>('CardTextRecognizer');
+export type ScanText = { text: string; lines: string[]; query: string; queries: string[]; hints: ScanHints; cardDetected: boolean; ready: boolean };
+const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string; boxes?: TextBox[]; cardDetected?: boolean }> }>('CardTextRecognizer');
 
 const normalizeCardLine = (line: string) => {
   let value = line.replace(/\s+/g, ' ').trim();
@@ -85,5 +85,11 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
   if (!text || !search.query) {
     throw new Error('No card name or collector number was detected. Move closer, avoid glare, and try again.');
   }
-  return { text, lines, ...search };
+  return {
+    text,
+    lines,
+    ...search,
+    cardDetected: result.cardDetected === true,
+    ready: result.cardDetected === true && Boolean(search.hints.name && search.hints.number),
+  };
 }

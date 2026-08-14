@@ -55,7 +55,7 @@ After the development build is installed on the iPhone, start Metro with:
 npx expo start --dev-client --clear
 ```
 
-Open the installed **pokeScan development build**, not Expo Go. Point the camera at a card and align it within the frame. Once the camera is ready, pokeScan waits briefly for autofocus and captures automatically; no shutter press is required. The shutter remains available as a manual retry after an unsuccessful scan. pokeScan will:
+Open the installed **pokeScan development build**, not Expo Go. Point the camera at a card and align it within the frame. A moving cyan beam shows that live detection is active. pokeScan repeatedly checks low-overhead camera frames locally and proceeds only when Apple Vision detects a card-shaped rectangle, a name near the top, and a collector number near the bottom. No shutter press is required, and weak frames never trigger PokéWallet requests. The shutter remains available as a manual fallback. pokeScan will:
 
 1. Capture the real camera image.
 2. Extract text locally with Apple Vision.
