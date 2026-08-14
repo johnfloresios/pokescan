@@ -18,6 +18,10 @@ public class CardTextRecognizerModule: Module {
       request.recognitionLevel = .accurate
       request.usesLanguageCorrection = true
       request.recognitionLanguages = ["en-US"]
+      request.customWords = [
+        "ex", "EX", "GX", "V", "VMAX", "VSTAR", "BREAK",
+        "Mega", "Radiant", "Shining", "Hisuian", "Galarian", "Paldean"
+      ]
       request.minimumTextHeight = 0.012
       let orientation = image.cgImageOrientation
       DispatchQueue.global(qos: .userInitiated).async {

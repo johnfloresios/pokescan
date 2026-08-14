@@ -63,6 +63,8 @@ Open the installed **pokeScan development build**, not Expo Go. Point the camera
 4. Request live matches from PokéWallet.
 5. Display the returned images, details, and prices.
 
+The OCR layer includes Pokémon TCG terminology such as `ex`, `GX`, `VMAX`, and `VSTAR`, plus targeted correction for stylized suffixes and collector-number characters. For best results, fill most of the guide frame with the card, keep the name and collector number sharp, and tilt the card slightly if a foil surface creates glare.
+
 If `.env` is missing, the API key is rejected, Apple Vision cannot read the card, or PokéWallet returns an error, pokeScan displays the real error instead of fallback data.
 
 ### Build real scanning from Linux or Windows
