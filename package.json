@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "main": "expo-router/entry",
   "scripts": {
+    "check:scanner": "node scripts/check-scanner-deps.js",
+    "postinstall": "node scripts/check-scanner-deps.js",
     "start": "expo start",
     "ios": "expo run:ios",
     "android": "expo run:android",

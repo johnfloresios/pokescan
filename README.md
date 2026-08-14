@@ -36,6 +36,12 @@ Install the native camera, Nitro, and worklet dependencies:
 npm install react-native-vision-camera react-native-nitro-modules react-native-nitro-image react-native-vision-camera-ocr-plus react-native-vision-camera-worklets react-native-worklets
 ```
 
+Expo SDK 54 configures the Worklets Babel transform through its preset. Do not add `react-native-worklets/plugin` manually to this Expo project. Verify the scanner packages before building with:
+
+```bash
+npm run check:scanner
+```
+
 First, create `.env` and add a real PokéWallet key:
 
 ```bash
