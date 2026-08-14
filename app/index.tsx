@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Dimensions, ImageBackground, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { useCameraDevice, useCameraPermission, usePhotoOutput } from 'react-native-vision-camera';
-import { Camera as OCRCamera, type Text as OCRText } from 'react-native-vision-camera-ocr-plus';
+import { Camera, useCameraDevice, useCameraPermission, useFrameOutput, usePhotoOutput } from 'react-native-vision-camera';
+import { useTextRecognition } from 'react-native-vision-camera-ocr-plus';
+import { scheduleOnRN } from 'react-native-worklets';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
@@ -125,29 +126,33 @@ function ScannerBeam() {
 function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
   const device = useCameraDevice('back');
   const photoOutput = usePhotoOutput();
+  const { scanText } = useTextRecognition({ language: 'latin', frameSkipThreshold: 5 });
   const [ready, setReady] = useState(false);
+  const [active, setActive] = useState(true);
   const [status, setStatus] = useState('Looking for name + card number…');
   const lastSignature = useRef('');
   const stableFrames = useRef(0);
   const locked = useRef(false);
 
-  const finishScan = async (scan: ScanText) => {
+  const finishScan = useCallback(async (scan: ScanText) => {
     if (locked.current) return;
     locked.current = true;
     setStatus(`Locked: ${scan.query}`);
     try {
       await photoOutput.capturePhotoToFile({}, {});
+      setActive(false);
       await onDetected(scan);
     } catch (e) {
       locked.current = false;
+      setActive(true);
       stableFrames.current = 0;
       setStatus(e instanceof Error ? e.message : 'Hold steady and try again');
     }
-  };
+  }, [onDetected, photoOutput]);
 
-  const handleText = (data: OCRText | string) => {
-    if (locked.current || typeof data === 'string') return;
-    const scan = analyzeLiveText(data.resultText ?? '');
+  const handleText = useCallback((recognizedText: string) => {
+    if (locked.current) return;
+    const scan = analyzeLiveText(recognizedText);
     if (!scan.ready) {
       stableFrames.current = 0;
       lastSignature.current = '';
@@ -159,22 +164,35 @@ function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
     lastSignature.current = signature;
     setStatus(stableFrames.current >= 2 ? 'Card identified · capturing…' : `Verifying ${scan.query}…`);
     if (stableFrames.current >= 2) void finishScan(scan);
-  };
+  }, [finishScan]);
+
+  const frameOutput = useFrameOutput({
+    pixelFormat: 'rgb',
+    onFrame: (frame: any) => {
+      'worklet';
+      const result = scanText(frame);
+      if (result.resultText) scheduleOnRN(handleText, result.resultText);
+      frame.dispose();
+    },
+  });
 
   const manualCapture = async () => {
     if (locked.current) return;
     locked.current = true;
+    setStatus('Capturing photo…');
     try {
       const { filePath } = await photoOutput.capturePhotoToFile({}, {});
+      setActive(false);
       await onManualPhoto(filePath);
     } catch (e) {
       locked.current = false;
+      setActive(true);
       setStatus(e instanceof Error ? e.message : 'Could not capture photo');
     }
   };
 
   if (!device) return <View style={[s.cameraPage,s.center]}><ActivityIndicator color={C.cyan}/><Text style={s.cameraHelp}>Finding back camera…</Text></View>;
-  return <View style={s.cameraPage}><OCRCamera style={StyleSheet.absoluteFill} device={device} isActive={!locked.current} outputs={[photoOutput]} mode="recognize" options={{ language:'latin', frameSkipThreshold:6, scanRegion:{left:'7%',top:'18%',width:'86%',height:'64%'} }} callback={handleText} onInitialized={() => setReady(true)} />
+  return <View style={s.cameraPage}><Camera style={StyleSheet.absoluteFill} device={device} isActive={active} outputs={[frameOutput, photoOutput]} onInitialized={() => setReady(true)} onError={(cameraError: any) => { setReady(false); setStatus(cameraError.message); }} />
     <LinearGradient colors={['rgba(3,8,16,.78)', 'transparent', 'transparent', 'rgba(3,8,16,.9)']} locations={[0,.25,.7,1]} style={StyleSheet.absoluteFill} />
     <SafeAreaView style={s.cameraSafe}><View style={s.cameraTop}><Pressable onPress={onClose} style={s.glassButton}><Feather name="x" size={23} color={C.white} /></Pressable><Text style={s.cameraTitle}>Scan your card</Text><View style={s.glassButton}><Feather name="zap" size={20} color={C.white} /></View></View>
       <View style={s.frameWrap}><View style={s.frame}><Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" /><ScannerBeam /></View><View style={s.hold}><MaterialCommunityIcons name="cards-outline" size={18} color={C.cyan} /><Text style={s.holdText}>NAME + BOTTOM NUMBER MUST BE CLEAR</Text></View></View>

@@ -17,6 +17,8 @@ The Expo Router runtime also requires the SDK-matched `expo-linking` and `expo-c
 npx expo install expo-linking expo-constants
 ```
 
+`react-dom` is explicitly pinned to `19.1.0` to match Expo 54's React version. This prevents npm from auto-selecting an incompatible newer optional peer through Expo Router.
+
 For local testing, add your PokéWallet development key to `.env`:
 
 ```env
