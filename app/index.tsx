@@ -9,7 +9,7 @@ import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Card } from '@/types';
 import { C, shadow } from '@/theme';
 import { recognizeCard } from '@/services/scanner';
-import { cardImageSource, getCard, searchCards } from '@/services/pokewallet';
+import { cardImageSource, getCard, rankCards, searchCards } from '@/services/pokewallet';
 
 type Screen = 'home' | 'camera' | 'analyzing' | 'matches' | 'detail';
 const money = (n: number | null) => n == null ? '—' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -26,10 +26,19 @@ export default function App() {
   const lookup = async (q: string, uri?: string) => {
     try {
       setError(''); setScreen('analyzing');
-      const actual = uri ? (await recognizeCard(uri)).query : q.trim();
+      const scan = uri ? await recognizeCard(uri) : undefined;
+      const actual = scan?.query ?? q.trim();
       setQuery(actual);
-      const cards = await searchCards(actual);
-      setMatches(cards); setScreen('matches');
+      let cards: Card[] = [];
+      const candidates = (scan?.queries ?? [actual]).slice(0, 4);
+      for (const candidate of candidates) {
+        const found = await searchCards(candidate);
+        cards = [...cards, ...found.filter(item => !cards.some(existing => existing.id === item.id))];
+        const wantedNumber = scan?.hints.number?.split('/')[0].replace(/^0+/, '');
+        const hasExactNumber = wantedNumber && cards.some(card => card.number.split('/')[0].replace(/^0+/, '') === wantedNumber);
+        if (!scan || hasExactNumber || (cards.length > 0 && !wantedNumber)) break;
+      }
+      setMatches(scan ? rankCards(cards, scan.hints) : cards); setScreen('matches');
     } catch (e) { setError(e instanceof Error ? e.message : 'Something went wrong.'); setScreen(uri ? 'camera' : 'home'); }
   };
   const openCamera = async () => {

@@ -1,4 +1,5 @@
 import { Card, Price } from '../types';
+import type { ScanHints } from './scanner';
 
 const BASE = 'https://api.pokewallet.io';
 const proxy = process.env.EXPO_PUBLIC_POKEWALLET_PROXY_URL?.trim().replace(/\/$/, '');
@@ -26,6 +27,24 @@ export async function searchCards(query: string): Promise<Card[]> {
   const res = await fetch(endpoint(`/search?q=${encodeURIComponent(query)}&limit=12`), { headers: headers() });
   if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? 'PokéWallet rejected the API key.' : res.status === 429 ? 'Search limit reached. Try again shortly.' : `PokéWallet search failed (${res.status}).`);
   const json = await res.json(); return (json.results ?? []).map(mapCard);
+}
+export function rankCards(cards: Card[], hints: ScanHints): Card[] {
+  const normalized = (value?: string) => value?.toLowerCase().replace(/[^a-z0-9]/g, '') ?? '';
+  const wantedNumber = normalized(hints.number?.split('/')[0]);
+  const wantedName = normalized(hints.name);
+  const wantedSet = normalized(hints.setCode);
+  return cards.map((card, index) => {
+    let score = 100 - index;
+    if (wantedNumber && normalized(card.number.split('/')[0]) === wantedNumber) score += 80;
+    if (wantedName && normalized(card.name) === wantedName) score += 60;
+    else if (wantedName && normalized(card.name).includes(wantedName)) score += 30;
+    if (wantedSet && normalized(card.setCode) === wantedSet) score += 50;
+    if (hints.hp && card.hp === hints.hp) score += 25;
+    return { card, score };
+  }).sort((a, b) => b.score - a.score).map(({ card }, index) => ({
+    ...card,
+    confidence: Math.max(.55, .96 - index * .08),
+  }));
 }
 export async function getCard(id: string): Promise<Card> {
   assertConfigured();
