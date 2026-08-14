@@ -26,9 +26,65 @@ EXPO_PUBLIC_POKEWALLET_API_KEY=
 
 Restart Expo with `--clear` after changing `.env`.
 
+## Enable real camera scanning
+
+pokeScan does not return mock OCR, cards, or prices. A camera capture must run through the native Apple Vision module, and the extracted card name and collector number are sent to the configured PokéWallet API.
+
+First, create `.env` and add a real PokéWallet key:
+
+```bash
+cp .env.example .env
+```
+
+```env
+EXPO_PUBLIC_POKEWALLET_PROXY_URL=
+EXPO_PUBLIC_POKEWALLET_API_KEY=pk_test_your_real_key
+```
+
+Then create and install an iOS development build on a Mac:
+
+```bash
+npm install
+npx expo prebuild --platform ios
+npx expo run:ios --device
+```
+
+After the development build is installed on the iPhone, start Metro with:
+
+```bash
+npx expo start --dev-client --clear
+```
+
+Open the installed **pokeScan development build**, not Expo Go. Point the camera at a card, align it within the frame, and press the shutter. pokeScan will:
+
+1. Capture the real camera image.
+2. Extract text locally with Apple Vision.
+3. Build a search query from the card name and collector number.
+4. Request live matches from PokéWallet.
+5. Display the returned images, details, and prices.
+
+If `.env` is missing, the API key is rejected, Apple Vision cannot read the card, or PokéWallet returns an error, pokeScan displays the real error instead of fallback data.
+
+### Build real scanning from Linux or Windows
+
+iOS cannot be compiled locally outside macOS. Create an EAS development build instead:
+
+```bash
+npm install
+npx eas-cli@latest login
+npx eas-cli@latest build:configure
+npx eas-cli@latest build --platform ios --profile development
+```
+
+Install the resulting build on the registered iPhone and run:
+
+```bash
+npx expo start --dev-client --clear
+```
+
 ## Preview on an iPhone with Expo Go
 
-This runs the complete interface and demo scan. Apple Vision OCR is not available inside Expo Go.
+This previews the interface, but Apple Vision OCR is not available inside Expo Go. Pressing the camera shutter in Expo Go will show an instruction to install a development build; it never returns mock card data.
 
 ```bash
 npx expo start --clear
@@ -86,4 +142,4 @@ npx eas-cli@latest submit --platform ios
 
 ## PokéWallet proxy requirements
 
-The proxy must attach the private `X-API-Key` header and pass through `/search`, `/cards/:id`, and `/images/:id`. It must preserve query strings and image content types. Without an API key or proxy URL, pokeScan uses its built-in demo results.
+The proxy must attach the private `X-API-Key` header and pass through `/search`, `/cards/:id`, and `/images/:id`. It must preserve query strings and image content types. pokeScan now requires a configured API key or proxy and never returns built-in mock results.

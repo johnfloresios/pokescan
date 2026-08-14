@@ -26,9 +26,9 @@ export default function App() {
   const lookup = async (q: string, uri?: string) => {
     try {
       setError(''); setScreen('analyzing');
-      const actual = uri ? (await recognizeCard(uri)).query : q;
-      setQuery(actual || q);
-      const cards = await searchCards(actual || q || 'Pikachu');
+      const actual = uri ? (await recognizeCard(uri)).query : q.trim();
+      setQuery(actual);
+      const cards = await searchCards(actual);
       setMatches(cards); setScreen('matches');
     } catch (e) { setError(e instanceof Error ? e.message : 'Something went wrong.'); setScreen(uri ? 'camera' : 'home'); }
   };

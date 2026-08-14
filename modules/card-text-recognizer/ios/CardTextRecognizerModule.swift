@@ -1,6 +1,7 @@
 import ExpoModulesCore
 import Vision
 import UIKit
+import ImageIO
 
 public class CardTextRecognizerModule: Module {
   public func definition() -> ModuleDefinition {
@@ -17,10 +18,28 @@ public class CardTextRecognizerModule: Module {
       request.recognitionLevel = .accurate
       request.usesLanguageCorrection = true
       request.recognitionLanguages = ["en-US"]
+      request.minimumTextHeight = 0.012
+      let orientation = image.cgImageOrientation
       DispatchQueue.global(qos: .userInitiated).async {
-        do { try VNImageRequestHandler(cgImage: cgImage, orientation: .up).perform([request]) }
+        do { try VNImageRequestHandler(cgImage: cgImage, orientation: orientation).perform([request]) }
         catch { promise.reject("VISION_ERROR", error.localizedDescription) }
       }
+    }
+  }
+}
+
+private extension UIImage {
+  var cgImageOrientation: CGImagePropertyOrientation {
+    switch imageOrientation {
+    case .up: return .up
+    case .upMirrored: return .upMirrored
+    case .down: return .down
+    case .downMirrored: return .downMirrored
+    case .left: return .left
+    case .leftMirrored: return .leftMirrored
+    case .right: return .right
+    case .rightMirrored: return .rightMirrored
+    @unknown default: return .up
     }
   }
 }
