@@ -35,8 +35,8 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   // use the physical card bands rather than relative OCR extents; relative
   // extents can incorrectly promote an attack when the real title is blurry.
   const cardRelativeY = (box: TextBox) => cardBounds ? (box.y - cardBounds.y) / Math.max(.01, cardBounds.height) : relativeY(box);
-  const topThreshold = cardBounds ? .68 : .66;
-  const bottomThreshold = cardBounds ? .28 : .35;
+  const topThreshold = cardBounds ? .58 : .62;
+  const bottomThreshold = cardBounds ? .36 : .38;
   const topLines = normalizedBoxes.filter(box => cardRelativeY(box) >= topThreshold).sort((a, b) => b.y - a.y || a.x - b.x).map(box => box.text);
   const spatialBottomLines = normalizedBoxes.filter(box => cardRelativeY(box) <= bottomThreshold).sort((a, b) => b.y - a.y || a.x - b.x).map(box => box.text);
   const bottomLines = spatialBottomLines.length ? spatialBottomLines : clean.slice(Math.max(1, Math.floor(clean.length * 0.55)));
@@ -45,14 +45,17 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const fraction = fractionLine?.match(/\d{1,3}\s*\/\s*\d{1,3}/)?.[0];
   const ignored = /^(basic|stage\s*\d*|evolves?\s+from|trainer|item|supporter|energy|ability|weakness|resistance|retreat|hp\s*\d+|illus\.|©)/i;
   const titleFromLine = (line: string) => line
+    .replace(/^(?:BASIC|STAGE\s*\d*)\s+/i, '')
     .replace(/\bHP\s*\d{2,3}\b/ig, '')
     .replace(/\b\d{2,3}\s*HP\b/ig, '')
     .replace(/\s+/g, ' ')
     .trim();
   const validName = (value: string) => /^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .:'’\-]{2,32}$/.test(value) && !ignored.test(value) && value.split(/\s+/).length <= 4;
   const spatialName = topLines.map(titleFromLine).find(validName);
-  // With a detected card, never fall back to body text for the title.
-  const name = spatialName ?? (!cardBounds ? clean.map(titleFromLine).find(validName) : undefined);
+  // Live OCR is returned in reading order. If spatial boxes are unavailable,
+  // inspect only the first quarter of lines so attacks can never become names.
+  const headerLines = clean.slice(0, Math.max(2, Math.ceil(clean.length * .25)));
+  const name = spatialName ?? (!cardBounds ? headerLines.map(titleFromLine).find(validName) : undefined);
 
   // On some full-art cards Vision sees only the card's unique number ("196")
   // rather than the entire printed fraction ("196/165"). Collector numbers
@@ -83,6 +86,19 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   return { query: queries[0] ?? '', queries, hints: { name, number, setCode, hp, evidence: clean.join(' ') } };
 };
 
+export function analyzeLiveText(rawText: string): ScanText {
+  const text = rawText.trim();
+  const lines = text.split(/\r?\n/).map(normalizeCardLine).filter(Boolean);
+  const search = buildSearch(lines);
+  return {
+    text,
+    lines,
+    ...search,
+    cardDetected: lines.length >= 4,
+    ready: Boolean(search.hints.name && search.hints.number) && lines.length >= 4,
+  };
+}
+
 export async function recognizeCard(uri: string): Promise<ScanText> {
   if (Platform.OS !== 'ios') {
     throw new Error('Camera text recognition is currently available on iOS only.');
@@ -104,6 +120,9 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
     lines,
     ...search,
     cardDetected: result.cardDetected === true,
-    ready: result.cardDetected === true && Boolean(search.hints.name && search.hints.number),
+    // Name + collector number is the authoritative capture gate. Rectangle
+    // detection strengthens confidence, while a sufficiently rich OCR frame
+    // permits cards whose foil, sleeve, or border hides one or more edges.
+    ready: Boolean(search.hints.name && search.hints.number) && (result.cardDetected === true || lines.length >= 4),
   };
 }

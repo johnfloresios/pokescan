@@ -1,6 +1,6 @@
 # pokeScan
 
-A React Native Pokémon card scanner that uses Apple Vision OCR on iOS and PokéWallet for card matching, images, details, and pricing.
+A React Native Pokémon card scanner that uses VisionCamera, Nitro Modules, on-device live OCR, and PokéWallet for card matching, images, details, and pricing.
 
 ## Environment setup
 
@@ -28,7 +28,13 @@ Restart Expo with `--clear` after changing `.env`.
 
 ## Enable real camera scanning
 
-pokeScan does not return mock OCR, cards, or prices. A camera capture must run through the native Apple Vision module, and the extracted card name and collector number are sent to the configured PokéWallet API.
+pokeScan does not return mock OCR, cards, or prices. Live frames run through VisionCamera v5 and its Nitro-powered on-device OCR pipeline. The app waits for the same character name and collector number across two processed frames, captures a full-resolution still through Nitro Image, and only then sends the extracted identifiers to PokéWallet.
+
+Install the native camera, Nitro, and worklet dependencies:
+
+```bash
+npm install react-native-vision-camera react-native-nitro-modules react-native-nitro-image react-native-vision-camera-ocr-plus react-native-vision-camera-worklets react-native-worklets
+```
 
 First, create `.env` and add a real PokéWallet key:
 
@@ -55,17 +61,17 @@ After the development build is installed on the iPhone, start Metro with:
 npx expo start --dev-client --clear
 ```
 
-Open the installed **pokeScan development build**, not Expo Go. Point the camera at a card and align it within the frame. A moving cyan beam shows that live detection is active. pokeScan repeatedly checks low-overhead camera frames locally and proceeds only when Apple Vision detects a card-shaped rectangle, a name near the top, and a collector number near the bottom. No shutter press is required, and weak frames never trigger PokéWallet requests. The shutter remains available as a manual fallback. pokeScan will:
+Open the installed **pokeScan development build**, not Expo Go. Point the camera at a card and align it within the frame. A moving cyan beam shows that live OCR is active. OCR is restricted to the visible guide region and runs every sixth camera frame. pokeScan proceeds only after two frames agree on both the character name and bottom collector number. No shutter press is required, and weak or unstable frames never trigger PokéWallet requests. The shutter remains available as a manual fallback. pokeScan will:
 
 1. Capture the real camera image.
-2. Extract text locally with Apple Vision.
+2. Extract text locally with the Nitro-powered live OCR processor.
 3. Build a search query from the card name and collector number.
 4. Request live matches from PokéWallet.
 5. Display the returned images, details, and prices.
 
-The OCR layer includes Pokémon TCG terminology such as `ex`, `GX`, `VMAX`, and `VSTAR`, plus targeted correction for stylized suffixes and collector-number characters. Apple Vision returns the card rectangle and position of every text box. Only text inside the physical top title band can become the character name, preventing attacks such as “Fury Swipes” from being mistaken for a Pokémon. Collector numbers and set codes are taken from the physical bottom band. If either band is unreadable, auto-scan keeps gathering frames instead of sending a weak query. It then reranks matches using the detected number, name, set, HP, rarity, attacks, and matching description words. For best results, fill most of the guide frame with the card, keep both the top name and bottom collector number sharp, and tilt the card slightly if a foil surface creates glare.
+The OCR layer includes targeted correction for Pokémon TCG suffixes such as `ex`, `GX`, `VMAX`, and `VSTAR`, plus collector-number character corrections. Live OCR is cropped to the physical guide frame, and two consecutive frames must agree before capture. Collector numbers remain mandatory for automatic capture. If the title or bottom number is unreadable, auto-scan keeps gathering frames instead of sending a weak query. Results are reranked using the detected number, name, set, HP, rarity, attacks, evolution, and matching description words. For best results, fill most of the guide frame with the card, keep both the top name and bottom collector number sharp, and tilt the card slightly if a foil surface creates glare.
 
-If `.env` is missing, the API key is rejected, Apple Vision cannot read the card, or PokéWallet returns an error, pokeScan displays the real error instead of fallback data.
+If `.env` is missing, the API key is rejected, OCR cannot read the card, or PokéWallet returns an error, pokeScan displays the real error instead of fallback data.
 
 ### Build real scanning from Linux or Windows
 
@@ -86,7 +92,7 @@ npx expo start --dev-client --clear
 
 ## Preview on an iPhone with Expo Go
 
-This previews the interface, but Apple Vision OCR is not available inside Expo Go. Pressing the camera shutter in Expo Go will show an instruction to install a development build; it never returns mock card data.
+This previews the interface, but VisionCamera, Nitro, and live OCR are not available inside Expo Go. Real scanning requires the development build and never returns mock card data.
 
 ```bash
 npx expo start --clear
@@ -96,7 +102,7 @@ Install Expo Go on the iPhone and scan the QR code displayed in the terminal.
 
 ## iOS development build on macOS
 
-A Mac with Xcode is required to compile iOS locally. This native development build enables Apple Vision OCR.
+A Mac with Xcode is required to compile iOS locally. This native development build enables VisionCamera, Nitro, and live OCR.
 
 ```bash
 npm install

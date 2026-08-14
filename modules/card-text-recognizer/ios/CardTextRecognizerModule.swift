@@ -58,8 +58,10 @@ public class CardTextRecognizerModule: Module {
           try handler.perform([rectangleRequest])
           if let rectangles = rectangleRequest.results, let card = rectangles.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height }) {
             detectedCardRect = card.boundingBox
-            request.regionOfInterest = card.boundingBox.insetBy(dx: card.boundingBox.width * 0.015, dy: card.boundingBox.height * 0.015)
           }
+          // OCR the full image so every returned text box uses the same image
+          // coordinate space as the detected rectangle. Applying an ROI here
+          // can produce region-relative boxes on some iOS versions.
           try handler.perform([request])
         }
         catch { promise.reject("VISION_ERROR", error.localizedDescription) }

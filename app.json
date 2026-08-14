@@ -16,9 +16,9 @@
     },
     "android": {
       "package": "com.pokescan.scanner",
-      "permissions": ["CAMERA"]
+      "permissions": ["android.permission.CAMERA"]
     },
-    "plugins": ["expo-router", ["expo-camera", { "cameraPermission": "Allow pokeScan to scan Pokémon cards." }]],
+    "plugins": ["expo-router"],
     "autolinking": { "nativeModulesDir": "./modules" },
     "experiments": { "typedRoutes": true },
     "extra": {

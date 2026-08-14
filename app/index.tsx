@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Dimensions, ImageBackground, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useCameraDevice, useCameraPermission, usePhotoOutput } from 'react-native-vision-camera';
+import { Camera as OCRCamera, type Text as OCRText } from 'react-native-vision-camera-ocr-plus';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
@@ -8,7 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Card } from '@/types';
 import { C, shadow } from '@/theme';
-import { recognizeCard, ScanText } from '@/services/scanner';
+import { analyzeLiveText, recognizeCard, ScanText } from '@/services/scanner';
 import { cardImageSource, getCard, rankCards, searchCards } from '@/services/pokewallet';
 
 type Screen = 'home' | 'camera' | 'analyzing' | 'matches' | 'detail';
@@ -16,12 +17,11 @@ const money = (n: number | null) => n == null ? '—' : `$${n.toLocaleString('en
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('home');
-  const [permission, askPermission] = useCameraPermissions();
+  const { hasPermission, requestPermission } = useCameraPermission();
   const [query, setQuery] = useState('');
   const [matches, setMatches] = useState<Card[]>([]);
   const [selected, setSelected] = useState<Card | null>(null);
   const [error, setError] = useState('');
-  const camera = useRef<CameraView>(null);
   const captureInProgress = useRef(false);
 
   const searchWithScan = async (actual: string, scan?: ScanText) => {
@@ -48,47 +48,18 @@ export default function App() {
     } catch (e) { setError(e instanceof Error ? e.message : 'Something went wrong.'); setScreen(uri ? 'camera' : 'home'); }
   };
   const openCamera = async () => {
-    if (!permission?.granted) { const result = await askPermission(); if (!result.granted) return; }
+    if (!hasPermission) { const granted = await requestPermission(); if (!granted) return; }
     setError(''); setScreen('camera');
   };
-  const probe = async () => {
-    if (!camera.current || captureInProgress.current) return false;
+  const acceptLiveScan = async (scan: ScanText) => {
+    if (captureInProgress.current) return;
     captureInProgress.current = true;
     try {
-      const photo = await camera.current.takePictureAsync({ quality: .88, skipProcessing: false, shutterSound: false });
-      if (!photo?.uri) return false;
-      let scan: ScanText;
-      try {
-        scan = await recognizeCard(photo.uri);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : '';
-        if (message.includes('development build') || message.includes('iOS only')) setError(message);
-        return false;
-      }
-      if (!scan.ready) return false;
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      try {
-        await searchWithScan(scan.query, scan);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'PokéWallet search failed.');
-        setScreen('camera');
-      }
-      return true;
-    } catch {
-      return false;
-    } finally {
-      captureInProgress.current = false;
-    }
-  };
-  const capture = async () => {
-    if (!camera.current || captureInProgress.current) return;
-    captureInProgress.current = true;
-    try {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      const photo = await camera.current.takePictureAsync({ quality: 1, skipProcessing: false });
-      if (photo?.uri) await lookup('', photo.uri);
+      await searchWithScan(scan.query, scan);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'The camera could not capture the card.');
+      setError(e instanceof Error ? e.message : 'PokéWallet search failed.');
+      setScreen('camera');
     } finally {
       captureInProgress.current = false;
     }
@@ -98,7 +69,7 @@ export default function App() {
     try { setSelected(await getCard(card.id)); } catch { /* search data is still useful */ }
   };
 
-  if (screen === 'camera') return <CameraScreen cameraRef={camera} onClose={() => setScreen('home')} onCapture={capture} onProbe={probe} error={error} />;
+  if (screen === 'camera') return <CameraScreen onClose={() => setScreen('home')} onDetected={acceptLiveScan} onManualPhoto={(path: string) => lookup('', `file://${path}`)} error={error} />;
   if (screen === 'analyzing') return <Analyzing />;
   if (screen === 'matches') return <Matches query={query} cards={matches} onBack={() => setScreen('home')} onSelect={choose} onSearch={lookup} />;
   if (screen === 'detail' && selected) return <Detail card={selected} onBack={() => setScreen('matches')} />;
@@ -151,34 +122,63 @@ function ScannerBeam() {
   return <Animated.View style={[s.scanLine, { transform: [{ translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [8, (W - 58) * 88 / 63 - 18] }) }] }]}><LinearGradient colors={['transparent', C.cyan, C.white, C.cyan, 'transparent']} start={{x:0,y:0}} end={{x:1,y:0}} style={StyleSheet.absoluteFill}/></Animated.View>;
 }
 
-function CameraScreen({ cameraRef, onClose, onCapture, onProbe, error }: any) {
+function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
+  const device = useCameraDevice('back');
+  const photoOutput = usePhotoOutput();
   const [ready, setReady] = useState(false);
-  const [attempt, setAttempt] = useState(0);
+  const [status, setStatus] = useState('Looking for name + card number…');
+  const lastSignature = useRef('');
+  const stableFrames = useRef(0);
+  const locked = useRef(false);
 
-  useEffect(() => {
-    if (!ready || error) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const scan = async () => {
-      if (cancelled) return;
-      const found = await onProbe();
-      if (cancelled || found) return;
-      setAttempt(value => value + 1);
-      timer = setTimeout(scan, 900);
-    };
-    timer = setTimeout(scan, 1100);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [ready, error, onProbe]);
-
-  const retry = () => {
-    onCapture();
+  const finishScan = async (scan: ScanText) => {
+    if (locked.current) return;
+    locked.current = true;
+    setStatus(`Locked: ${scan.query}`);
+    try {
+      await photoOutput.capturePhotoToFile({}, {});
+      await onDetected(scan);
+    } catch (e) {
+      locked.current = false;
+      stableFrames.current = 0;
+      setStatus(e instanceof Error ? e.message : 'Hold steady and try again');
+    }
   };
 
-  return <View style={s.cameraPage}><CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" autofocus="on" onCameraReady={() => setReady(true)} />
+  const handleText = (data: OCRText | string) => {
+    if (locked.current || typeof data === 'string') return;
+    const scan = analyzeLiveText(data.resultText ?? '');
+    if (!scan.ready) {
+      stableFrames.current = 0;
+      lastSignature.current = '';
+      setStatus(scan.hints.name ? 'Name found · reading bottom number…' : 'Reading character name…');
+      return;
+    }
+    const signature = `${scan.hints.name?.toLowerCase()}|${scan.hints.number}`;
+    stableFrames.current = signature === lastSignature.current ? stableFrames.current + 1 : 1;
+    lastSignature.current = signature;
+    setStatus(stableFrames.current >= 2 ? 'Card identified · capturing…' : `Verifying ${scan.query}…`);
+    if (stableFrames.current >= 2) void finishScan(scan);
+  };
+
+  const manualCapture = async () => {
+    if (locked.current) return;
+    locked.current = true;
+    try {
+      const { filePath } = await photoOutput.capturePhotoToFile({}, {});
+      await onManualPhoto(filePath);
+    } catch (e) {
+      locked.current = false;
+      setStatus(e instanceof Error ? e.message : 'Could not capture photo');
+    }
+  };
+
+  if (!device) return <View style={[s.cameraPage,s.center]}><ActivityIndicator color={C.cyan}/><Text style={s.cameraHelp}>Finding back camera…</Text></View>;
+  return <View style={s.cameraPage}><OCRCamera style={StyleSheet.absoluteFill} device={device} isActive={!locked.current} outputs={[photoOutput]} mode="recognize" options={{ language:'latin', frameSkipThreshold:6, scanRegion:{left:'7%',top:'18%',width:'86%',height:'64%'} }} callback={handleText} onInitialized={() => setReady(true)} />
     <LinearGradient colors={['rgba(3,8,16,.78)', 'transparent', 'transparent', 'rgba(3,8,16,.9)']} locations={[0,.25,.7,1]} style={StyleSheet.absoluteFill} />
     <SafeAreaView style={s.cameraSafe}><View style={s.cameraTop}><Pressable onPress={onClose} style={s.glassButton}><Feather name="x" size={23} color={C.white} /></Pressable><Text style={s.cameraTitle}>Scan your card</Text><View style={s.glassButton}><Feather name="zap" size={20} color={C.white} /></View></View>
       <View style={s.frameWrap}><View style={s.frame}><Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" /><ScannerBeam /></View><View style={s.hold}><MaterialCommunityIcons name="cards-outline" size={18} color={C.cyan} /><Text style={s.holdText}>NAME + BOTTOM NUMBER MUST BE CLEAR</Text></View></View>
-      <View><Text style={s.cameraHelp}>{error ? 'Scanner unavailable' : ready ? `Detecting card${'.'.repeat(attempt % 4)}` : 'Starting camera…'}</Text>{!!error && <Text style={s.cameraError}>{error}</Text>}<View style={s.shutterRow}><View style={{width:48}} /><Pressable onPress={retry} style={s.shutterOuter}><View style={s.shutterInner} /></Pressable><View style={s.autoBadge}><MaterialCommunityIcons name="line-scan" size={16} color={C.cyan}/><Text style={s.autoBadgeText}>LIVE</Text></View></View></View>
+      <View><Text style={s.cameraHelp}>{error ? 'Scanner unavailable' : ready ? status : 'Starting live OCR…'}</Text>{!!error && <Text style={s.cameraError}>{error}</Text>}<View style={s.shutterRow}><View style={{width:48}} /><Pressable onPress={manualCapture} style={s.shutterOuter}><View style={s.shutterInner} /></Pressable><View style={s.autoBadge}><MaterialCommunityIcons name="line-scan" size={16} color={C.cyan}/><Text style={s.autoBadgeText}>LIVE</Text></View></View></View>
     </SafeAreaView>
   </View>;
 }
@@ -200,7 +200,7 @@ function Detail({card,onBack}:{card:Card;onBack:()=>void}) { const p=card.prices
     <View style={s.detailBody}><View style={s.detailHeading}><View style={{flex:1}}><Text style={s.detailName}>{card.name}</Text><Text style={s.detailSet}>{card.setName} · {card.number}</Text></View><View style={s.typeBadge}><Feather name="zap" size={14} color={C.ink}/><Text style={s.typeText}>{card.type}</Text></View></View>
       <View style={s.priceCard}><View><Text style={s.valueLabel}>CURRENT MARKET VALUE</Text><Text style={s.bigPrice}>{money(p?.market)}</Text><Text style={s.updated}>Updated from {p?.source ?? 'PokéWallet'}</Text></View><View style={s.gain}><Feather name="trending-up" size={15} color={C.green}/><Text style={s.gainText}>Live</Text></View></View>
       <View style={s.range}><Range label="Low" value={money(p?.low)}/><View style={s.rangeLine}/><Range label="Market" value={money(p?.market)} active/><View style={s.rangeLine}/><Range label="High" value={money(p?.high)}/></View>
-      <Text style={s.sectionTitle}>CARD INFORMATION</Text><View style={s.infoGrid}><Info label="RARITY" value={card.rarity}/><Info label="CARD NO." value={card.number}/><Info label="STAGE" value={card.stage||'—'}/><Info label="HP" value={card.hp||'—'}/>{!!card.evolvesFrom&&<Info label="EVOLVES FROM" value={card.evolvesFrom}/>} {!!card.regulationMark&&<Info label="REGULATION" value={card.regulationMark}/>} {!!card.illustrator&&<Info label="ILLUSTRATOR" value={card.illustrator}/>} {!!card.retreatCost&&<Info label="RETREAT COST" value={card.retreatCost}/>}</View>
+      <Text style={s.sectionTitle}>CARD INFORMATION</Text><View style={s.infoGrid}><Info label="RARITY" value={card.rarity}/><Info label="CARD NO." value={card.number}/><Info label="STAGE" value={card.stage||'—'}/><Info label="HP" value={card.hp||'—'}/>{!!card.evolvesFrom&&<Info label="EVOLVES FROM" value={card.evolvesFrom}/>}{!!card.regulationMark&&<Info label="REGULATION" value={card.regulationMark}/>}{!!card.illustrator&&<Info label="ILLUSTRATOR" value={card.illustrator}/>}{!!card.retreatCost&&<Info label="RETREAT COST" value={card.retreatCost}/>}</View>
       {(card.attacks?.length||card.abilities?.length||card.text||card.weakness||card.resistance)&&<><Text style={s.sectionTitle}>CARD DETAILS</Text><View style={s.detailsBox}>{card.abilities?.map(a=><View key={`ability-${a}`} style={s.ability}><View style={s.abilityBadge}><Text style={s.abilityBadgeText}>ABILITY</Text></View><Text style={s.abilityText}>{a}</Text></View>)}{card.attacks?.map(a=><View key={a} style={s.attack}><View style={s.energyDot}/><Text style={s.attackText}>{a}</Text></View>)}{!!card.text&&<Text style={s.cardText}>{card.text}</Text>}<View style={s.combatRow}>{!!card.weakness&&<Text style={s.weakness}>Weakness  ·  {card.weakness}</Text>}{!!card.resistance&&<Text style={s.weakness}>Resistance  ·  {card.resistance}</Text>}</View></View></>}
       <Pressable style={s.collection}><Feather name="plus" size={20} color={C.ink}/><Text style={s.collectionText}>Add to collection</Text></Pressable><Text style={s.disclaimer}>Prices are estimates and vary by condition, language, and market.</Text>
     </View></ScrollView></View>; }
