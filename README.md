@@ -36,6 +36,8 @@ Install the native camera, Nitro, and worklet dependencies:
 npm install react-native-vision-camera react-native-nitro-modules react-native-nitro-image react-native-vision-camera-ocr-plus react-native-vision-camera-worklets react-native-worklets
 ```
 
+The versions are pinned in `package.json` for Expo 54 / React Native 0.81 compatibility. Avoid upgrading one Nitro or VisionCamera package independently; their generated native bindings must remain aligned.
+
 Expo SDK 54 configures the Worklets Babel transform through its preset. Do not add `react-native-worklets/plugin` manually to this Expo project. Verify the scanner packages before building with:
 
 ```bash
