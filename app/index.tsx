@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Dimensions, ImageBackground, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission, useFrameOutput, usePhotoOutput } from 'react-native-vision-camera';
+import { Camera, type CameraRef, useCameraDevice, useCameraPermission, useFrameOutput, usePhotoOutput } from 'react-native-vision-camera';
 import { useTextRecognition } from 'react-native-vision-camera-ocr-plus';
 import { scheduleOnRN } from 'react-native-worklets';
 import { Image } from 'expo-image';
@@ -124,8 +124,9 @@ function ScannerBeam() {
 }
 
 function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
-  const device = useCameraDevice('back', { physicalDevices: ['wide-angle-camera'] });
-  const photoOutput = usePhotoOutput({ containerFormat: 'jpeg', qualityPrioritization: 'balanced', quality: .95 });
+  const camera = useRef<CameraRef>(null);
+  const device = useCameraDevice('back', { physicalDevices: ['wide-angle'] });
+  const photoOutput = usePhotoOutput({ targetResolution: { width: 4032, height: 3024 }, containerFormat: 'jpeg', qualityPrioritization: 'balanced', quality: .95 });
   const { scanText } = useTextRecognition({ language: 'latin', frameSkipThreshold: 5 });
   const [ready, setReady] = useState(false);
   const [active, setActive] = useState(true);
@@ -172,14 +173,28 @@ function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
   }, [finishScan]);
 
   const frameOutput = useFrameOutput({
+    targetResolution: { width: 1920, height: 1080 },
     pixelFormat: 'rgb',
+    allowDeferredStart: true,
+    dropFramesWhileBusy: true,
     onFrame: (frame: any) => {
       'worklet';
-      const result = scanText(frame);
-      if (result.resultText) scheduleOnRN(handleText, result.resultText);
-      frame.dispose();
+      try {
+        const result = scanText(frame);
+        if (result.resultText) scheduleOnRN(handleText, result.resultText);
+      } finally {
+        frame.dispose();
+      }
     },
   });
+
+  const cameraReady = useCallback(() => {
+    setReady(true);
+    setStatus('Looking for name + card number…');
+    requestAnimationFrame(() => {
+      camera.current?.focusTo({ x: W / 2, y: Dimensions.get('window').height / 2 }, { responsiveness: 'snappy', adaptiveness: 'continuous' }).catch(() => undefined);
+    });
+  }, []);
 
   const manualCapture = async () => {
     if (locked.current || !ready) return;
@@ -200,7 +215,7 @@ function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
   };
 
   if (!device) return <View style={[s.cameraPage,s.center]}><ActivityIndicator color={C.cyan}/><Text style={s.cameraHelp}>Finding back camera…</Text></View>;
-  return <View style={s.cameraPage}><Camera style={StyleSheet.absoluteFill} device={device} isActive={active} outputs={[frameOutput, photoOutput]} zoom={device.neutralZoom} resizeMode="cover" onInitialized={() => setReady(true)} onError={(cameraError: any) => { setReady(false); setStatus(cameraError.message); }} />
+  return <View style={s.cameraPage}><Camera ref={camera} style={StyleSheet.absoluteFill} device={device} isActive={active} outputs={[frameOutput, photoOutput]} zoom={device.neutralZoom} resizeMode="cover" onStarted={cameraReady} onPreviewStarted={cameraReady} onError={(cameraError: any) => { setReady(false); setStatus(cameraError.message); }} />
     <LinearGradient pointerEvents="none" colors={['rgba(3,8,16,.78)', 'transparent', 'transparent', 'rgba(3,8,16,.9)']} locations={[0,.25,.7,1]} style={StyleSheet.absoluteFill} />
     <SafeAreaView style={s.cameraSafe}><View style={s.cameraTop}><Pressable onPress={onClose} style={s.glassButton}><Feather name="x" size={23} color={C.white} /></Pressable><Text style={s.cameraTitle}>Scan your card</Text><View style={s.glassButton}><Feather name="zap" size={20} color={C.white} /></View></View>
       <View style={s.frameWrap}><View style={s.frame}><Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" /><ScannerBeam /></View><View style={s.hold}><MaterialCommunityIcons name="cards-outline" size={18} color={C.cyan} /><Text style={s.holdText}>NAME + BOTTOM NUMBER MUST BE CLEAR</Text></View></View>
