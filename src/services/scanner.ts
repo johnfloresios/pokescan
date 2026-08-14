@@ -18,14 +18,21 @@ const normalizeCardLine = (line: string) => {
 
   // Collector numbers are a strong identifier. Repair common OCR glyph
   // substitutions only when they appear on both sides of a slash.
-  value = value.replace(/\b([0-9OIl]{1,3})\s*[/|]\s*([0-9OIl]{1,3})\b/g, (_, left, right) => {
-    const digits = (part: string) => part.replace(/[O]/gi, '0').replace(/[Il]/g, '1');
+  value = value.replace(/\b([0-9OIlBS]{1,3})\s*[/|\\]\s*([0-9OIlBS]{1,3})\b/g, (_, left, right) => {
+    const digits = (part: string) => part.replace(/[O]/gi, '0').replace(/[Il]/g, '1').replace(/B/gi, '8').replace(/S/gi, '5');
     return `${digits(left)}/${digits(right)}`;
   });
+  // ML Kit sometimes drops a faint slash entirely. Only repair lines made of
+  // two collector-sized groups so ordinary attack values are never changed.
+  value = value.replace(/^(?:no\.?\s*|#\s*)?([0-9OIlBS]{2,3})\s+([0-9OIlBS]{2,3})(?:\s+[A-Z]{1,4})?$/i, (_, left, right) => {
+    const digits = (part: string) => part.replace(/[O]/gi, '0').replace(/[Il]/g, '1').replace(/B/gi, '8').replace(/S/gi, '5');
+    return `${digits(left)}/${digits(right)}`;
+  });
+  value = value.replace(/^([0-9]{6})$/, (_, number) => `${number.slice(0, 3)}/${number.slice(3)}`);
   return value;
 };
 
-const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBounds) => {
+const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBounds, allowStandaloneSerial = true) => {
   const clean = lines.map(normalizeCardLine).filter(Boolean);
   const normalizedBoxes = boxes.map(box => ({ ...box, text: normalizeCardLine(box.text) })).filter(box => box.text);
   const minY = normalizedBoxes.length ? Math.min(...normalizedBoxes.map(box => box.y)) : 0;
@@ -67,7 +74,7 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
     return line.match(/^(?:no\.?\s*|#\s*)?(\d{2,3})(?:\s*[A-Z]{1,3})?$/i)?.[1];
   }).find(Boolean);
 
-  const number = fraction ?? serial;
+  const number = fraction ?? (allowStandaloneSerial ? serial : undefined);
   const hp = clean.map(line => line.match(/\bHP\s*(\d{2,3})\b/i)?.[1]).find(Boolean);
   const excludedCodes = new Set(['HP', 'EX', 'GX', 'V', 'VMAX', 'VSTAR', 'BASIC', 'STAGE', 'ABILITY']);
   const setCode = [...bottomLines].reverse().map(line => {
@@ -90,7 +97,10 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
 export function analyzeLiveText(rawText: string): ScanText {
   const text = rawText.trim();
   const lines = text.split(/\r?\n/).map(normalizeCardLine).filter(Boolean);
-  const search = buildSearch(lines);
+  // A bare value such as "20" is usually attack damage. Live capture requires
+  // the printed collector fraction; high-resolution still OCR may use spatial
+  // position to safely recover a standalone serial.
+  const search = buildSearch(lines, [], undefined, false);
   return {
     text,
     lines,

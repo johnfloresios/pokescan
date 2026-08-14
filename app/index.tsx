@@ -173,7 +173,7 @@ function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
   }, [finishScan]);
 
   const frameOutput = useFrameOutput({
-    targetResolution: { width: 1920, height: 1080 },
+    targetResolution: { width: 1920, height: 1440 },
     pixelFormat: 'rgb',
     allowDeferredStart: true,
     dropFramesWhileBusy: true,
