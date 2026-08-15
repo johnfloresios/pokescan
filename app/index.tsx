@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Dimensions, ImageBackground, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Dimensions, ImageBackground, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Camera, type CameraRef, useCameraDevice, useCameraPermission, useFrameOutput, usePhotoOutput } from 'react-native-vision-camera';
 import { useTextRecognition } from 'react-native-vision-camera-ocr-plus';
 import { scheduleOnRN } from 'react-native-worklets';
@@ -71,9 +71,10 @@ function Home({ onScan, onSearch, error }: { onScan: () => void; onSearch: (q: s
   const [text, setText] = useState('');
   return <View style={s.page}>
     <LinearGradient colors={['#160D2B', C.ink, '#07050C']} style={StyleSheet.absoluteFill} />
+    <KeyboardAvoidingView style={s.safe} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
     <SafeAreaView style={s.safe}>
       <View style={s.top}><Brand /><Pressable style={s.avatar}><Ionicons name="person" size={18} color={C.white} /></Pressable></View>
-      <ScrollView contentContainerStyle={s.homeScroll} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={s.homeScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
         <View style={s.heroCopy}><View style={s.eyebrow}><View style={s.liveDot} /><Text style={s.eyebrowText}>POWERED BY POKÉWALLET</Text></View>
           <Text style={s.heroTitle}>Know what your{`\n`}card is <Text style={s.heroAccent}>worth.</Text></Text>
           <Text style={s.heroSub}>Scan any Pokémon card. Get an instant match and live market value.</Text>
@@ -93,6 +94,7 @@ function Home({ onScan, onSearch, error }: { onScan: () => void; onSearch: (q: s
         <View style={s.tip}><View style={s.bulb}><Ionicons name="bulb" size={18} color={C.yellow} /></View><Text style={s.tipText}><Text style={{ color: C.white, fontFamily: 'Inter_600SemiBold' }}>Scanner tip  </Text>Place the card on a dark surface and avoid glare for the best match.</Text></View>
       </ScrollView>
     </SafeAreaView>
+    </KeyboardAvoidingView>
   </View>;
 }
 function Stat({ icon, value, label }: { icon: any; value: string; label: string }) { return <View style={s.stat}><Feather name={icon} size={17} color={C.cyan} /><Text style={s.statValue}>{value}</Text><Text style={s.statLabel}>{label}</Text></View>; }
