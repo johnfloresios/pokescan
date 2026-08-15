@@ -8,6 +8,7 @@ export interface ExtractedCardFields {
   numberOnly?: string;
   hp?: string;
   setCode?: string;
+  setId?: string;
   setName?: string;
   type?: string;
   stage?: string;
@@ -130,10 +131,12 @@ export function extractCardFields(rawOCRText: string, hints: Partial<ExtractedCa
 
 export function buildCascadingQueries(fields: ExtractedCardFields): string[] {
   const values = [
-    [fields.name, fields.cardNumber], [fields.name, fields.numberOnly], [fields.name, fields.hp],
-    [fields.setCode, fields.cardNumber], [fields.cardNumber], [fields.name],
-    [fields.name?.split(/\s+/)[0]],
-  ].map(parts => parts.filter(Boolean).join(' ').trim()).filter(Boolean);
+    fields.setId && fields.numberOnly ? `${fields.setId} ${fields.numberOnly}` : '',
+    fields.setCode && fields.cardNumber ? `${fields.setCode} ${fields.cardNumber}` : '',
+    fields.name && fields.setCode ? `${fields.name} ${fields.setCode}` : '',
+    fields.name && fields.cardNumber ? `${fields.name} ${fields.cardNumber}` : '',
+    fields.name ?? '',
+  ].filter(Boolean);
   return [...new Set(values)];
 }
 

@@ -38,7 +38,7 @@ export default function App() {
   const searchWithScan = async (actual: string, scan?: ScanText) => {
     setError(''); setScreen('analyzing'); setQuery(actual);
     let cards: Card[] = [];
-    const candidates = (scan?.queries ?? [actual]).slice(0, 4);
+    const candidates = (scan?.queries ?? [actual]).slice(0, 5);
     for (const candidate of candidates) {
       const found = await searchCards(candidate);
       cards = [...cards, ...found.filter(item => !cards.some(existing => existing.id === item.id))];
@@ -104,7 +104,7 @@ export default function App() {
   if (screen === 'collection') return <CollectionScreen userId={session.user.id} onBack={() => setScreen('home')} onScan={openCamera} onSelect={openSavedCard} />;
   if (screen === 'matches') return <Matches query={query} cards={matches} onBack={() => setScreen('home')} onCollection={() => setScreen('collection')} onSelect={choose} onSearch={lookup} onScan={openCamera} />;
   if (screen === 'detail' && selected) return <Detail card={selected} onBack={() => setScreen(selectedIsSaved ? 'collection' : 'matches')} onHome={() => setScreen('home')} onCollection={() => setScreen('collection')} onSave={saveToCollection} onScan={openCamera} initiallySaved={selectedIsSaved} />;
-  const displayName = session.user.user_metadata?.nickname ?? session.user.user_metadata?.first_name ?? session.user.user_metadata?.full_name ?? session.user.user_metadata?.name ?? session.user.email?.split('@')[0] ?? 'Collector';
+  const displayName = [session.user.user_metadata?.nickname, session.user.user_metadata?.first_name, session.user.user_metadata?.full_name, session.user.user_metadata?.name, session.user.email?.split('@')[0]].find(value => typeof value === 'string' && value.trim())?.trim() ?? 'Collector';
   return <Home userId={session.user.id} name={displayName} email={session.user.email ?? 'Collector'} onScan={openCamera} onCollection={() => setScreen('collection')} onSelectCard={openSavedCard} onSearch={lookup} onLogout={() => supabase.auth.signOut()} error={error} />;
 }
 

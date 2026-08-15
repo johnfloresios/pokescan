@@ -49,19 +49,34 @@ public class CardTextRecognizerModule: Module {
         }
         let lines = boxes.compactMap { $0["text"] as? String }
           var bottomLines: [String] = []
+          var titleLines: [String] = []
           if let card = detectedCardRect {
-            let bottomLeft = CGRect(x: card.minX, y: card.minY, width: card.width * 0.72, height: card.height * 0.24)
+            // Run dedicated high-resolution passes over the two identifiers
+            // that matter most: the printed title and the tiny bottom edge.
+            let titleRegion = CGRect(x: card.minX, y: card.minY + card.height * 0.76, width: card.width, height: card.height * 0.24)
+            let titleRequest = VNRecognizeTextRequest()
+            titleRequest.recognitionLevel = .accurate
+            titleRequest.usesLanguageCorrection = true
+            titleRequest.recognitionLanguages = ["en-US"]
+            titleRequest.customWords = request.customWords
+            titleRequest.minimumTextHeight = 0.004
+            titleRequest.regionOfInterest = titleRegion
+            try handler.perform([titleRequest])
+            titleLines = (titleRequest.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+
+            let bottomLeft = CGRect(x: card.minX, y: card.minY, width: card.width, height: card.height * 0.20)
             let bottomRequest = VNRecognizeTextRequest()
             bottomRequest.recognitionLevel = .accurate
             bottomRequest.usesLanguageCorrection = false
             bottomRequest.recognitionLanguages = ["en-US"]
-            bottomRequest.minimumTextHeight = 0.008
+            bottomRequest.customWords = ["SV2a", "SWSH", "SVI", "PAL", "OBF", "PAR", "TEF", "TWM", "SCR", "SSP", "PRE", "JTG", "DRI"]
+            bottomRequest.minimumTextHeight = 0.003
             bottomRequest.regionOfInterest = bottomLeft
             try handler.perform([bottomRequest])
             bottomLines = (bottomRequest.results ?? []).compactMap { $0.topCandidates(1).first?.string }
           }
         var payload: [String: Any] = [
-          "text": lines.joined(separator: "\n"),
+          "text": (titleLines + lines + bottomLines).joined(separator: "\n"),
           "lines": lines,
           "boxes": boxes,
             "bottomText": bottomLines.joined(separator: "\n"),
