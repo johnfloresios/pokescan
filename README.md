@@ -167,3 +167,27 @@ npx eas-cli@latest submit --platform ios
 ## PokéWallet proxy requirements
 
 The proxy must attach the private `X-API-Key` header and pass through `/search`, `/cards/:id`, and `/images/:id`. It must preserve query strings and image content types. Card details display available evolution lineage, abilities, attacks, weakness, resistance, retreat cost, illustrator, and regulation mark returned by PokéWallet. pokeScan requires a configured API key or proxy and never returns built-in mock results.
+
+## Reusable OCR matcher
+
+[`src/services/card-matcher.ts`](src/services/card-matcher.ts) exports pure, unit-testable OCR cleanup, parsing, query-building, Levenshtein similarity, scoring, and confidence functions. It also provides a complete PokéWallet search orchestrator:
+
+```ts
+import { findBestPokeWalletMatch } from './src/services/card-matcher';
+
+const result = await findBestPokeWalletMatch(rawOCRText, {
+  apiKey: process.env.EXPO_PUBLIC_POKEWALLET_API_KEY ?? '',
+  limit: 10,
+  minimumScore: 35,
+  // Native spatial OCR fields can override text-only guesses:
+  hints: { name: 'Mareep', cardNumber: '027/086', hp: '70' },
+});
+
+console.log(result.bestMatch);
+console.log(result.topCandidates);
+console.log(result.confidence);
+console.log(result.extractedFields);
+console.log(result.rawQuery);
+```
+
+For an App Store build, call PokéWallet through the configured server proxy instead of embedding a private production key in the application bundle.

@@ -1,10 +1,14 @@
 import { Platform } from 'react-native';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { PhotoRecognizer } from 'react-native-vision-camera-ocr-plus';
+import { extractCardFields } from './card-matcher';
 
 type TextBox = { text: string; x: number; y: number; width: number; height: number };
 type CardBounds = { x: number; y: number; width: number; height: number };
-export type ScanHints = { name?: string; number?: string; setCode?: string; hp?: string; evidence?: string };
+export type ScanHints = {
+  name?: string; number?: string; setCode?: string; setName?: string;
+  rarity?: string; hp?: string; type?: string; stage?: string; evidence?: string;
+};
 export type ScanText = { text: string; lines: string[]; query: string; queries: string[]; hints: ScanHints; cardDetected: boolean; ready: boolean };
 const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string; boxes?: TextBox[]; cardDetected?: boolean; cardBounds?: CardBounds }> }>('CardTextRecognizer');
 
@@ -51,19 +55,35 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
 
   const fractionLine = [...bottomLines, ...clean].find(x => /\b\d{1,3}\s*\/\s*\d{1,3}\b/.test(x));
   const fraction = fractionLine?.match(/\d{1,3}\s*\/\s*\d{1,3}/)?.[0];
-  const ignored = /^(basic|stage\s*\d*|evolves?\s+from|trainer|item|supporter|energy|ability|weakness|resistance|retreat|hp\s*\d+|illus\.|©)/i;
+  // Header labels are frequently returned as partial words (for example
+  // "BAS" from BASIC). Never allow those fragments to become a card name.
+  const ignored = /^(?:bas(?:i|1|l)?(?:c)?|sta(?:g(?:e)?)?\s*\d*|evo(?:lves?)?\s*(?:from)?|trainer|item|supporter|energy|ability|weakness|resistance|retreat|hp\s*\d+|illus\.?|no\.?|©)(?:\b|$)/i;
   const titleFromLine = (line: string) => line
     .replace(/^(?:BASIC|STAGE\s*\d*)\s+/i, '')
     .replace(/\bHP\s*\d{2,3}\b/ig, '')
     .replace(/\b\d{2,3}\s*HP\b/ig, '')
     .replace(/\s+/g, ' ')
     .trim();
-  const validName = (value: string) => /^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .:'’\-]{2,32}$/.test(value) && !ignored.test(value) && value.split(/\s+/).length <= 4;
-  const spatialName = topLines.map(titleFromLine).find(validName);
+  const normalizeName = (value: string) => value
+    .replace(/[|]/g, 'I')
+    .replace(/\b(?:ea|cx|e[×a])\b$/i, 'ex')
+    .replace(/\bE\s+X\b$/i, 'ex')
+    .replace(/\s*[-–—]\s*/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const validName = (value: string) => {
+    const letters = value.replace(/[^A-Za-zÀ-ÿ]/g, '');
+    const suspiciousHeaderCode = letters.length <= 6 && letters === letters.toUpperCase();
+    return /^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .:'’\-]{2,32}$/.test(value)
+      && !ignored.test(value)
+      && !suspiciousHeaderCode
+      && value.split(/\s+/).length <= 4;
+  };
+  const spatialName = topLines.map(titleFromLine).map(normalizeName).find(validName);
   // Live OCR is returned in reading order. If spatial boxes are unavailable,
   // inspect only the first quarter of lines so attacks can never become names.
   const headerLines = clean.slice(0, Math.max(2, Math.ceil(clean.length * .25)));
-  const name = spatialName ?? (!cardBounds ? headerLines.map(titleFromLine).find(validName) : undefined);
+  const name = spatialName ?? (!cardBounds ? headerLines.map(titleFromLine).map(normalizeName).find(validName) : undefined);
 
   // On some full-art cards Vision sees only the card's unique number ("196")
   // rather than the entire printed fraction ("196/165"). Collector numbers
@@ -78,23 +98,44 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   }).find(Boolean);
 
   const number = fraction ?? (allowStandaloneSerial ? serial : undefined);
-  const hp = clean.map(line => line.match(/\bHP\s*(\d{2,3})\b/i)?.[1]).find(Boolean);
   const excludedCodes = new Set(['HP', 'EX', 'GX', 'V', 'VMAX', 'VSTAR', 'BASIC', 'STAGE', 'ABILITY']);
   const setCode = [...bottomLines].reverse().map(line => {
     const match = line.match(/^(?:EN\s+)?([A-Z]{2,6}[0-9]{0,2})(?:\s+EN)?$/)?.[1];
     return match && !excludedCodes.has(match) ? match : undefined;
   }).find(Boolean);
 
+  const hp = clean.map(line => line.match(/\bHP\s*([0-9OIl]{2,3})\b/i)?.[1])
+    .find(Boolean)?.replace(/O/gi, '0').replace(/[Il]/g, '1');
+  const stage = clean.map(line => line.match(/\b(BASIC|STAGE\s*[12]|VMAX|VSTAR|MEGA)\b/i)?.[1])
+    .find(Boolean)?.replace(/\s+/g, ' ').toUpperCase();
+  const energyTypes = ['Colorless', 'Darkness', 'Dragon', 'Fairy', 'Fighting', 'Fire', 'Grass', 'Lightning', 'Metal', 'Psychic', 'Water'];
+  const type = energyTypes.find(candidate => clean.some(line => new RegExp(`^(?:TYPE\\s*)?${candidate}$`, 'i').test(line)));
+  const rarity = clean.map(line => line.match(/\b(AMAZING RARE|COMMON|UNCOMMON|RARE(?:\s+(?:HOLO|SECRET|RAINBOW|ULTRA|SHINY|PROMO))?)\b/i)?.[1])
+    .find(Boolean)?.replace(/\b\w/g, character => character.toUpperCase());
+  const knownSets = [
+    'Scarlet & Violet', 'Sword & Shield', 'Sun & Moon', 'Paldea Evolved', 'Obsidian Flames',
+    'Temporal Forces', 'Twilight Masquerade', 'Surging Sparks', 'Journey Together',
+    'Destined Rivals', 'Prismatic Evolutions', 'Crown Zenith', 'Lost Origin',
+  ];
+  const setName = knownSets.find(candidate => clean.some(line => line.toLowerCase().includes(candidate.toLowerCase())));
+  const textFallback = extractCardFields(clean.join('\n'));
+  const resolvedName = name ?? textFallback.name;
+  const resolvedHp = hp ?? textFallback.hp;
+  const resolvedType = type ?? textFallback.type;
+  const resolvedStage = stage ?? textFallback.stage;
+  const resolvedRarity = rarity ?? textFallback.rarity;
+
   const candidates = [
-    [name, number, setCode],
-    [name, number],
-    [number, setCode],
-    [name, setCode],
-    [name],
+    [resolvedName, number, setCode || setName],
+    [resolvedName, number],
+    [resolvedName, setCode || setName],
+    [number, setCode || setName],
+    [resolvedName, resolvedHp],
+    [resolvedName],
     [number],
   ].map(parts => parts.filter(Boolean).join(' ')).filter(Boolean);
   const queries = [...new Set(candidates)];
-  return { query: queries[0] ?? '', queries, hints: { name, number, setCode, hp, evidence: clean.join(' ') } };
+  return { query: queries[0] ?? '', queries, hints: { name: resolvedName, number, setCode, setName, rarity: resolvedRarity, hp: resolvedHp, type: resolvedType, stage: resolvedStage, evidence: clean.join(' ') } };
 };
 
 export function analyzeLiveText(rawText: string): ScanText {

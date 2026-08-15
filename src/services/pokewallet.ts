@@ -1,5 +1,6 @@
 import { Card, Price } from '../types';
 import type { ScanHints } from './scanner';
+import { similarity } from './card-matcher';
 
 const BASE = 'https://api.pokewallet.io';
 const proxy = process.env.EXPO_PUBLIC_POKEWALLET_PROXY_URL?.trim().replace(/\/$/, '');
@@ -13,14 +14,21 @@ function assertConfigured() {
   }
 }
 function prices(raw: any): Price[] {
-  const t = (raw.tcgplayer?.prices ?? []).map((p: any) => ({ market: p.market_price ?? null, low: p.low_price ?? null, high: p.high_price ?? null, source: 'TCGplayer', variant: p.variant_type }));
-  const c = (raw.cardmarket?.prices ?? []).map((p: any) => ({ market: p.trend ?? p.avg ?? null, low: p.low ?? null, high: null, source: 'Cardmarket', variant: p.variant_type }));
+  const tcg = raw.tcgplayer?.prices ?? [];
+  const market = raw.cardmarket?.prices ?? [];
+  const tcgRows = Array.isArray(tcg) ? tcg : Object.entries(tcg).map(([variant, value]) => ({ ...(value as object), variant_type: variant }));
+  const marketRows = Array.isArray(market) ? market : [market];
+  const t = tcgRows.map((p: any) => ({ market: p.market_price ?? p.market ?? null, low: p.low_price ?? p.low ?? null, high: p.high_price ?? p.high ?? null, source: 'TCGplayer', variant: p.variant_type }));
+  const c = marketRows.filter(Boolean).map((p: any) => ({ market: p.trend ?? p.trendPrice ?? p.avg ?? p.averageSellPrice ?? null, low: p.low ?? p.lowPrice ?? null, high: null, source: 'Cardmarket', variant: p.variant_type }));
   return [...t, ...c];
 }
 function mapCard(raw: any, i = 0): Card {
   const x = raw.card_info ?? raw;
+  const set = x.set ?? raw.set ?? {};
   const abilities = (x.abilities ?? x.ability ?? []).map ? (x.abilities ?? x.ability ?? []).map((ability: any) => typeof ability === 'string' ? ability : [ability.name, ability.text].filter(Boolean).join(' · ')) : [String(x.ability)];
-  return { id: raw.id, name: x.name ?? x.clean_name, setName: x.set_name ?? 'Unknown set', setCode: x.set_code ?? '', number: x.card_number ?? '—', rarity: x.rarity ?? 'Unknown', type: x.card_type ?? 'Pokémon', hp: x.hp, stage: x.stage, text: x.card_text, attacks: x.attacks, weakness: x.weakness, evolvesFrom: x.evolves_from ?? x.evolvesFrom ?? x.evolution_from, resistance: x.resistance, retreatCost: x.retreat_cost ?? x.retreatCost, illustrator: x.illustrator ?? x.artist, regulationMark: x.regulation_mark ?? x.regulationMark, abilities, imageUrl: endpoint(`/images/${encodeURIComponent(raw.id)}?size=high`), prices: prices(raw), confidence: Math.max(.55, .96 - i * .08) };
+  const attacks = (x.attacks ?? []).map((attack: any) => typeof attack === 'string' ? attack : [attack.name, attack.damage, attack.text].filter(Boolean).join(' · '));
+  const retreat = x.retreat_cost ?? x.retreatCost;
+  return { id: raw.id, name: x.name ?? x.clean_name, setName: x.set_name ?? set.name ?? 'Unknown set', setCode: x.set_code ?? set.ptcgoCode ?? set.id ?? '', number: x.card_number ?? x.number ?? '—', rarity: x.rarity ?? 'Unknown', type: x.card_type ?? x.types?.[0] ?? x.supertype ?? 'Pokémon', hp: x.hp, stage: x.stage ?? x.subtypes?.join(' · '), text: x.card_text ?? x.flavorText ?? x.rules?.join(' '), attacks, weakness: x.weakness ?? x.weaknesses?.map((item: any) => `${item.type} ${item.value}`).join(', '), evolvesFrom: x.evolves_from ?? x.evolvesFrom ?? x.evolution_from, resistance: x.resistance ?? x.resistances?.map((item: any) => `${item.type} ${item.value}`).join(', '), retreatCost: Array.isArray(retreat) ? retreat.join(', ') : retreat, illustrator: x.illustrator ?? x.artist, regulationMark: x.regulation_mark ?? x.regulationMark, abilities, imageUrl: x.images?.large ?? x.images?.small ?? endpoint(`/images/${encodeURIComponent(raw.id)}?size=high`), prices: prices(raw), confidence: Math.max(.55, .96 - i * .08) };
 }
 export async function searchCards(query: string): Promise<Card[]> {
   assertConfigured();
@@ -35,14 +43,22 @@ export function rankCards(cards: Card[], hints: ScanHints): Card[] {
   const wantedNumber = normalized(hints.number?.split('/')[0]);
   const wantedName = normalized(hints.name);
   const wantedSet = normalized(hints.setCode);
+  const wantedSetName = normalized(hints.setName);
+  const wantedType = normalized(hints.type);
+  const wantedRarity = normalized(hints.rarity);
+  const wantedStage = normalized(hints.stage);
   const evidenceWords = words(hints.evidence);
   return cards.map((card, index) => {
     let score = 100 - index;
-    if (wantedNumber && normalized(card.number.split('/')[0]) === wantedNumber) score += 80;
-    if (wantedName && normalized(card.name) === wantedName) score += 60;
-    else if (wantedName && normalized(card.name).includes(wantedName)) score += 30;
+    if (wantedNumber && normalized(card.number.split('/')[0]) === wantedNumber) score += 100;
+    if (wantedName && normalized(card.name) === wantedName) score += 40;
+    else if (wantedName) score += Math.round(similarity(hints.name, card.name) * 40);
     if (wantedSet && normalized(card.setCode) === wantedSet) score += 50;
+    if (wantedSetName && normalized(card.setName).includes(wantedSetName)) score += 45;
     if (hints.hp && card.hp === hints.hp) score += 25;
+    if (wantedType && normalized(card.type).includes(wantedType)) score += 20;
+    if (wantedRarity && normalized(card.rarity).includes(wantedRarity)) score += 18;
+    if (wantedStage && normalized(card.stage).includes(wantedStage)) score += 15;
     const cardEvidence = [card.rarity, card.setName, card.text, card.evolvesFrom, ...(card.abilities ?? []), ...(card.attacks ?? [])].filter(Boolean).join(' ');
     const evidenceMatches = [...words(cardEvidence)].filter(word => evidenceWords.has(word)).length;
     score += Math.min(30, evidenceMatches * 5);
