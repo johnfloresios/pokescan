@@ -47,11 +47,18 @@ export function rankCards(cards: Card[], hints: ScanHints): Card[] {
   const wantedType = normalized(hints.type);
   const wantedRarity = normalized(hints.rarity);
   const wantedStage = normalized(hints.stage);
+  const wantedBottom = normalized(hints.bottomIdentifier);
   const wantedTotal = normalized(hints.collectorTotal);
   const wantedNumbers = new Set(hints.numericEvidence ?? []);
   const evidenceWords = words(hints.evidence);
   const scored = cards.map((card, index) => {
     let score = 100 - index;
+    const resultFullIdentifiers = [normalized(card.number), normalized(`${card.setCode}${card.number.split('/')[0]}`)];
+    const fractionBottomMatches = hints.bottomIdentifier?.includes('/')
+      && normalized(card.number.split('/')[0]) === normalized(hints.bottomIdentifier.split('/')[0])
+      && (!card.printedTotal || normalized(card.printedTotal) === normalized(hints.bottomIdentifier.split('/')[1]));
+    if (wantedBottom && (resultFullIdentifiers.includes(wantedBottom) || fractionBottomMatches)) score += 200;
+    else if (wantedBottom) score -= 120;
     const resultNumber = normalized(card.number.split('/')[0]);
     if (wantedNumber && resultNumber === wantedNumber) score += 100;
     else if (wantedNumber && resultNumber) score -= 100;

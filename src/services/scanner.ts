@@ -8,10 +8,10 @@ type CardBounds = { x: number; y: number; width: number; height: number };
 export type ScanHints = {
   name?: string; number?: string; setCode?: string; setName?: string;
   rarity?: string; hp?: string; type?: string; stage?: string; evidence?: string;
-  collectorTotal?: string; numericEvidence?: string[];
+  collectorTotal?: string; numericEvidence?: string[]; bottomIdentifier?: string;
 };
 export type ScanText = { text: string; lines: string[]; query: string; queries: string[]; hints: ScanHints; cardDetected: boolean; ready: boolean };
-const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string; boxes?: TextBox[]; cardDetected?: boolean; cardBounds?: CardBounds }> }>('CardTextRecognizer');
+const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string; bottomText?: string; boxes?: TextBox[]; cardDetected?: boolean; cardBounds?: CardBounds }> }>('CardTextRecognizer');
 
 const normalizeCardLine = (line: string) => {
   let value = line.replace(/\s+/g, ' ').trim();
@@ -37,8 +37,9 @@ const normalizeCardLine = (line: string) => {
   return value;
 };
 
-const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBounds, allowStandaloneSerial = true) => {
+const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBounds, allowStandaloneSerial = true, preferredBottomText = '') => {
   const clean = lines.map(normalizeCardLine).filter(Boolean);
+  const preferredBottom = preferredBottomText.split(/\r?\n/).map(normalizeCardLine).filter(Boolean);
   const normalizedBoxes = boxes.map(box => ({ ...box, text: normalizeCardLine(box.text) })).filter(box => box.text);
   const minY = normalizedBoxes.length ? Math.min(...normalizedBoxes.map(box => box.y)) : 0;
   const maxY = normalizedBoxes.length ? Math.max(...normalizedBoxes.map(box => box.y + box.height)) : 1;
@@ -52,7 +53,7 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const bottomThreshold = cardBounds ? .36 : .38;
   const topLines = normalizedBoxes.filter(box => cardRelativeY(box) >= topThreshold).sort((a, b) => b.y - a.y || a.x - b.x).map(box => box.text);
   const spatialBottomLines = normalizedBoxes.filter(box => cardRelativeY(box) <= bottomThreshold).sort((a, b) => b.y - a.y || a.x - b.x).map(box => box.text);
-  const bottomLines = spatialBottomLines.length ? spatialBottomLines : clean.slice(Math.max(1, Math.floor(clean.length * 0.55)));
+  const bottomLines = [...preferredBottom, ...(spatialBottomLines.length ? spatialBottomLines : clean.slice(Math.max(1, Math.floor(clean.length * 0.55))))];
 
   const fractionLine = [...bottomLines, ...clean].find(x => /\b\d{1,3}\s*\/\s*\d{1,3}\b/.test(x));
   const fraction = fractionLine?.match(/\d{1,3}\s*\/\s*\d{1,3}/)?.[0];
@@ -105,6 +106,11 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
     const match = line.match(/^(?:EN\s+)?([A-Z]{2,6}[0-9]{0,2})(?:\s+EN)?$/)?.[1];
     return match && !excludedCodes.has(match) ? match : undefined;
   }).find(Boolean);
+  const compactIdentifier = bottomLines.map(line => line.toUpperCase().replace(/[^A-Z0-9/]/g, '')).find(line => /^(?:[A-Z]{2,6}\d{1,3}|[A-Z]{2,6}\d{1,3}\/\d{1,3})$/.test(line));
+  const splitIdentifier = bottomLines.map(line => line.toUpperCase().match(/\b([A-Z]{2,6})\s*[- ]\s*(\d{1,3}(?:\s*\/\s*\d{1,3})?)\b/)).find(Boolean);
+  const bottomIdentifier = compactIdentifier ?? (splitIdentifier ? `${splitIdentifier[1]}${splitIdentifier[2].replace(/\s/g, '')}` : fraction);
+  const resolvedNumber = number ?? splitIdentifier?.[2]?.replace(/\s/g, '');
+  const resolvedSetCode = (setCode && !/\d/.test(setCode)) ? setCode : splitIdentifier?.[1];
 
   const hp = clean.map(line => line.match(/\bHP\s*([0-9OIl]{2,3})\b/i)?.[1])
     .find(Boolean)?.replace(/O/gi, '0').replace(/[Il]/g, '1');
@@ -130,16 +136,18 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const resolvedRarity = rarity ?? textFallback.rarity;
 
   const candidates = [
-    [resolvedName, number, setCode || setName],
-    [resolvedName, number],
-    [resolvedName, setCode || setName],
-    [number, setCode || setName],
+    [bottomIdentifier],
+    [resolvedSetCode, resolvedNumber?.split('/')[0]],
+    [resolvedName, resolvedNumber, resolvedSetCode || setName],
+    [resolvedName, resolvedNumber],
+    [resolvedName, resolvedSetCode || setName],
+    [resolvedNumber, resolvedSetCode || setName],
     [resolvedName, resolvedHp],
     [resolvedName],
-    [number],
+    [resolvedNumber],
   ].map(parts => parts.filter(Boolean).join(' ')).filter(Boolean);
   const queries = [...new Set(candidates)];
-  return { query: queries[0] ?? '', queries, hints: { name: resolvedName, number, collectorTotal, numericEvidence, setCode, setName, rarity: resolvedRarity, hp: resolvedHp, type: resolvedType, stage: resolvedStage, evidence: clean.join(' ') } };
+  return { query: queries[0] ?? '', queries, hints: { name: resolvedName, number: resolvedNumber, collectorTotal, bottomIdentifier, numericEvidence, setCode: resolvedSetCode, setName, rarity: resolvedRarity, hp: resolvedHp, type: resolvedType, stage: resolvedStage, evidence: clean.join(' ') } };
 };
 
 export function analyzeLiveText(rawText: string): ScanText {
@@ -166,6 +174,7 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
   let boxes: TextBox[] = [];
   let cardDetected = false;
   let cardBounds: CardBounds | undefined;
+  let bottomText = '';
   if (VisionRecognizer) {
     try {
       const result = await VisionRecognizer.recognize(uri.replace('file://', ''));
@@ -173,6 +182,7 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
       boxes = result.boxes ?? [];
       cardDetected = result.cardDetected === true;
       cardBounds = result.cardBounds;
+      bottomText = result.bottomText ?? '';
     } catch { /* use ML Kit still-image OCR below */ }
   }
   if (!recognizedText.trim()) {
@@ -181,7 +191,7 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
   }
   const text = String(recognizedText ?? '').trim();
   const lines = text.split(/\r?\n/).map(normalizeCardLine).filter(Boolean);
-  const search = buildSearch(lines, boxes, cardBounds);
+  const search = buildSearch(lines, boxes, cardBounds, true, bottomText);
 
   if (!text || !search.query) {
     throw new Error('No card name or collector number was detected. Move closer, avoid glare, and try again.');
