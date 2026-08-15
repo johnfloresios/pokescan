@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Card } from '@/types';
 import { C, shadow } from '@/theme';
-import { analyzeLiveText, combineCardScans, recognizeCard, ScanText } from '@/services/scanner';
+import { analyzeLiveText, recognizeCard, ScanText } from '@/services/scanner';
 import { cardImageSource, getCard, rankCards, searchCards } from '@/services/pokewallet';
 import { isSupabaseConfigured, supabase } from '@/services/supabase';
 
@@ -58,14 +58,6 @@ export default function App() {
       await searchWithScan(actual, scan);
     } catch (e) { setError(e instanceof Error ? e.message : 'Something went wrong.'); setScreen(uri ? 'camera' : 'home'); }
   };
-  const lookupPhotos = async (paths: string[]) => {
-    try {
-      setError('');setScreen('analyzing');
-      const scans=await Promise.all(paths.map(path=>recognizeCard(`file://${path}`)));
-      const combined=combineCardScans(scans);
-      await searchWithScan(combined.query,combined);
-    } catch(e){setError(e instanceof Error?e.message:'Could not identify the captured card.');setScreen('camera');}
-  };
   const openCamera = async () => {
     if (!hasPermission) { const granted = await requestPermission(); if (!granted) return; }
     setError(''); setScreen('camera');
@@ -107,12 +99,13 @@ export default function App() {
   if (!isSupabaseConfigured) return <AuthPlaceholder configured={false} />;
   if (session === undefined) return <View style={[s.page,s.center]}><ActivityIndicator color={C.cyan} size="large"/><Text style={s.cameraHelp}>Loading your collection…</Text></View>;
   if (!session) return <AuthPlaceholder configured />;
-  if (screen === 'camera') return <CameraScreen onClose={() => setScreen('home')} onPhotos={lookupPhotos} error={error} />;
+  if (screen === 'camera') return <CameraScreen onClose={() => setScreen('home')} onPhoto={(path:string)=>lookup('',`file://${path}`)} error={error} />;
   if (screen === 'analyzing') return <Analyzing />;
   if (screen === 'collection') return <CollectionScreen userId={session.user.id} onBack={() => setScreen('home')} onScan={openCamera} onSelect={openSavedCard} />;
   if (screen === 'matches') return <Matches query={query} cards={matches} onBack={() => setScreen('home')} onSelect={choose} onSearch={lookup} onScan={openCamera} />;
   if (screen === 'detail' && selected) return <Detail card={selected} onBack={() => setScreen(selectedIsSaved ? 'collection' : 'matches')} onSave={saveToCollection} onScan={openCamera} initiallySaved={selectedIsSaved} />;
-  return <Home userId={session.user.id} email={session.user.email ?? 'Collector'} onScan={openCamera} onCollection={() => setScreen('collection')} onSearch={lookup} onLogout={() => supabase.auth.signOut()} error={error} />;
+  const displayName = session.user.user_metadata?.full_name ?? session.user.user_metadata?.name ?? session.user.email?.split('@')[0] ?? 'Collector';
+  return <Home userId={session.user.id} name={displayName} email={session.user.email ?? 'Collector'} onScan={openCamera} onCollection={() => setScreen('collection')} onSelectCard={openSavedCard} onSearch={lookup} onLogout={() => supabase.auth.signOut()} error={error} />;
 }
 
 function Brand({ dark = false }: { dark?: boolean }) {
@@ -154,7 +147,7 @@ function AuthPlaceholder({ configured }: { configured: boolean }) {
   return <View style={s.page}><LinearGradient colors={['#160D2B',C.ink,'#07050C']} style={StyleSheet.absoluteFill}/><KeyboardAvoidingView style={s.safe} behavior={Platform.OS==='ios'?'padding':'height'}><SafeAreaView style={s.safe}><ScrollView contentContainerStyle={s.authScroll} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive"><Brand/><View style={s.authMark}><MaterialCommunityIcons name="pokeball" size={42} color={C.yellow}/></View><Text style={s.authTitle}>{mode==='signin'?'Welcome back':'Create your account'}</Text><Text style={s.authCopy}>{mode==='signin'?'Sign in to view your collection and scan history.':'Start tracking the cards you scan and their value.'}</Text><View style={s.authForm}><Text style={s.authLabel}>EMAIL</Text><View style={s.authInputWrap}><Feather name="mail" size={18} color={C.muted}/><TextInput value={email} onChangeText={setEmail} placeholder="you@example.com" placeholderTextColor="#687B95" style={s.authInput} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} textContentType="emailAddress" selectionColor={C.cyan}/></View><Text style={s.authLabel}>PASSWORD</Text><View style={s.authInputWrap}><Feather name="lock" size={18} color={C.muted}/><TextInput value={password} onChangeText={setPassword} placeholder="At least 6 characters" placeholderTextColor="#687B95" style={s.authInput} secureTextEntry={!showPassword} autoCapitalize="none" autoCorrect={false} textContentType={mode==='signin'?'password':'newPassword'} selectionColor={C.cyan} onSubmitEditing={submit}/><Pressable onPress={()=>setShowPassword(value=>!value)} hitSlop={10}><Feather name={showPassword?'eye-off':'eye'} size={18} color={C.muted}/></Pressable></View>{mode==='signin'&&<Pressable onPress={resetPassword} disabled={loading} style={s.forgot}><Text style={s.forgotText}>Forgot password?</Text></Pressable>}{!!authError&&<View style={s.authNoticeError}><Feather name="alert-circle" size={15} color="#FF8B96"/><Text style={s.authErrorText}>{authError}</Text></View>}{!!message&&<View style={s.authNoticeSuccess}><Feather name="check-circle" size={15} color={C.green}/><Text style={s.authSuccessText}>{message}</Text></View>}<Pressable onPress={submit} disabled={loading} style={({pressed})=>[s.authSubmit,(pressed||loading)&&{opacity:.7}]}>{loading?<ActivityIndicator color={C.ink}/>:<><Text style={s.authSubmitText}>{mode==='signin'?'SIGN IN':'CREATE ACCOUNT'}</Text><Feather name="arrow-right" size={18} color={C.ink}/></>}</Pressable><View style={s.authSwitch}><Text style={s.authSwitchCopy}>{mode==='signin'?"Don't have an account?":'Already have an account?'}</Text><Pressable onPress={()=>{setMode(value=>value==='signin'?'signup':'signin');setAuthError('');setMessage('');}}><Text style={s.authSwitchAction}>{mode==='signin'?'Create one':'Sign in'}</Text></Pressable></View></View></ScrollView></SafeAreaView></KeyboardAvoidingView></View>;
 }
 
-function Home({ userId, email, onScan, onCollection, onSearch, onLogout, error }: { userId:string;email:string;onScan:()=>void;onCollection:()=>void;onSearch:(q:string)=>void;onLogout:()=>void;error:string }) {
+function Home({ userId, name, email, onScan, onCollection, onSelectCard, onSearch, onLogout, error }: { userId:string;name:string;email:string;onScan:()=>void;onCollection:()=>void;onSelectCard:(row:ScannedCardRow)=>void;onSearch:(q:string)=>void;onLogout:()=>void;error:string }) {
   const scrollRef=useRef<ScrollView>(null);
   const [text, setText] = useState('');
   const [cards,setCards]=useState<ScannedCardRow[]>([]);
@@ -180,14 +173,14 @@ function Home({ userId, email, onScan, onCollection, onSearch, onLogout, error }
     <SafeAreaView style={s.safe}>
       <View style={s.top}><Brand /><View style={s.topActions}><Pressable onPress={onScan} style={s.topScan}><MaterialCommunityIcons name="line-scan" size={20} color={C.ink}/></Pressable><Pressable onPress={onLogout} style={s.logout}><Feather name="log-out" size={15} color={C.white}/><Text style={s.logoutText}>Log out</Text></Pressable></View></View>
       <ScrollView ref={scrollRef} contentContainerStyle={s.dashboardScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" refreshControl={<RefreshControl refreshing={loading} onRefresh={loadDashboard} tintColor={C.cyan}/>}>
-        <View style={s.dashboardHello}><Text style={s.dashboardEyebrow}>YOUR COLLECTION</Text><Text style={s.dashboardTitle}>Welcome back.</Text><Text style={s.dashboardEmail}>{email}</Text></View>
+        <View style={s.dashboardHello}><Text style={s.dashboardEyebrow}>YOUR COLLECTION</Text><Text style={s.dashboardTitle}>Welcome back, {name}.</Text><Text style={s.dashboardEmail}>{email}</Text></View>
         <View style={s.metricRow}><Pressable onPress={onCollection} style={s.metricCard}><Text style={s.metricLabel}>PORTFOLIO VALUE</Text><Text style={s.metricValue}>{money(totalValue)}</Text><View style={s.metricTrend}><Feather name="trending-up" size={13} color={C.green}/><Text style={s.metricTrendText}>Live estimates</Text></View></Pressable><Pressable onPress={onCollection} style={s.metricCard}><Text style={s.metricLabel}>TOTAL CARDS</Text><Text style={s.metricValue}>{totalCount}</Text><Text style={s.metricHint}>Scanned cards</Text></Pressable></View>
         <Pressable onPress={onScan} style={({pressed})=>[s.heroScan,pressed&&{transform:[{scale:.98}]}]}><LinearGradient colors={['#9333EA','#6D28D9','#4C1D95']} start={{x:0,y:0}} end={{x:1,y:1}} style={s.heroScanGradient}><View style={s.heroScanIcon}><MaterialCommunityIcons name="line-scan" size={34} color={C.ink}/></View><View style={{flex:1}}><Text style={s.heroScanTitle}>SCAN CARD</Text><Text style={s.heroScanSub}>Identify and value a new card</Text></View><Feather name="arrow-up-right" size={24} color={C.white}/></LinearGradient></Pressable>
         <View style={s.divider}><View style={s.divLine} /><Text style={s.or}>OR SEARCH MANUALLY</Text><View style={s.divLine} /></View>
         <View style={s.searchBox}><Feather name="search" size={20} color={C.muted} /><TextInput value={text} onChangeText={setText} onFocus={()=>setTimeout(()=>scrollRef.current?.scrollTo({y:360,animated:true}),120)} onSubmitEditing={() => text.trim() && onSearch(text.trim())} placeholder="Card name or number" placeholderTextColor="#7F91AA" selectionColor={C.cyan} cursorColor={C.cyan} style={s.input} returnKeyType="search" autoCorrect={false} autoCapitalize="words" /><Pressable onPress={() => text.trim() && onSearch(text.trim())} style={s.searchGo}><Feather name="arrow-right" size={18} color={C.ink} /></Pressable></View>
         {!!(error||dataError)&&<Text style={s.error}>{error||dataError}</Text>}
         <View style={s.sectionRow}><Text style={s.dashboardSection}>RECENT SCANS</Text><Pressable onPress={onCollection} hitSlop={10}><Text style={s.seeAll}>View collection</Text></Pressable></View>
-        {!loading&&!cards.length?<View style={s.recentEmpty}><MaterialCommunityIcons name="cards-outline" size={34} color={C.muted}/><Text style={s.emptyTitle}>No scans yet</Text><Text style={s.emptySub}>Scan your first card to start a collection.</Text></View>:cards.map(card=><View key={card.id} style={s.recentCard}>{card.image_url?<Image source={{uri:card.image_url}} style={s.recentImage} contentFit="cover"/>:<View style={[s.recentImage,s.recentPlaceholder]}><MaterialCommunityIcons name="cards" size={22} color={C.muted}/></View>}<View style={s.recentInfo}><Text style={s.recentName} numberOfLines={1}>{card.card_name}</Text><Text style={s.recentSet} numberOfLines={1}>{card.set_name} · {card.set_number}</Text></View><Text style={s.recentPrice}>{money(Number(card.price_estimate)||0)}</Text></View>)}
+        {!loading&&!cards.length?<View style={s.recentEmpty}><MaterialCommunityIcons name="cards-outline" size={34} color={C.muted}/><Text style={s.emptyTitle}>No scans yet</Text><Text style={s.emptySub}>Scan your first card to start a collection.</Text></View>:cards.map(card=><Pressable key={card.id} onPress={()=>onSelectCard(card)} accessibilityRole="button" accessibilityLabel={`View ${card.card_name} details`} style={({pressed})=>[s.recentCard,pressed&&{opacity:.72}]}>{card.image_url?<Image source={{uri:card.image_url}} style={s.recentImage} contentFit="cover"/>:<View style={[s.recentImage,s.recentPlaceholder]}><MaterialCommunityIcons name="cards" size={22} color={C.muted}/></View>}<View style={s.recentInfo}><Text style={s.recentName} numberOfLines={1}>{card.card_name}</Text><Text style={s.recentSet} numberOfLines={1}>{card.set_name} · {card.set_number}</Text></View><Text style={s.recentPrice}>{money(Number(card.price_estimate)||0)}</Text><Feather name="chevron-right" size={17} color={C.muted}/></Pressable>)}
       </ScrollView>
       <View style={s.bottomNav}><View style={s.navItem}><Feather name="home" size={20} color={C.yellow}/><Text style={[s.navText,{color:C.yellow}]}>Home</Text></View><Pressable onPress={onCollection} style={s.navItem}><Feather name="layers" size={20} color={C.muted}/><Text style={s.navText}>Collection</Text></Pressable><Pressable onPress={onScan} style={s.navScan}><MaterialCommunityIcons name="line-scan" size={25} color={C.ink}/></Pressable></View>
     </SafeAreaView>
@@ -226,7 +219,7 @@ function ScannerBeam() {
   return <Animated.View style={[s.scanLine, { transform: [{ translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [8, SCAN_WIDTH * 88 / 63 - 18] }) }] }]}><LinearGradient colors={['transparent', C.cyan, C.white, C.cyan, 'transparent']} start={{x:0,y:0}} end={{x:1,y:0}} style={StyleSheet.absoluteFill}/></Animated.View>;
 }
 
-function CameraScreen({ onClose, onPhotos, error }: any) {
+function CameraScreen({ onClose, onPhoto, error }: any) {
   const camera = useRef<CameraRef>(null);
   const device = useCameraDevice('back', { physicalDevices: ['wide-angle'] });
   const photoOutput = usePhotoOutput({ targetResolution: { width: 4032, height: 3024 }, containerFormat: 'jpeg', qualityPrioritization: 'balanced', quality: .95 });
@@ -248,23 +241,18 @@ function CameraScreen({ onClose, onPhotos, error }: any) {
     locked.current = true;
     setStatus('Card detected · reading bottom details…');
     try {
-      const paths:string[]=[];
-      for(let index=0;index<3;index++){
-        setStatus(`Capturing detail photo ${index+1} of 3…`);
-        const {filePath}=await photoOutput.capturePhotoToFile({flashMode:'off',enableShutterSound:index===0},{});
-        paths.push(filePath);
-        if(index<2)await new Promise(resolve=>setTimeout(resolve,180));
-      }
+      setStatus('Capturing card…');
+      const {filePath}=await photoOutput.capturePhotoToFile({flashMode:'off',enableShutterSound:true},{});
       setActive(false);
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      await onPhotos(paths);
+      await onPhoto(filePath);
     } catch (e) {
       locked.current = false;
       setActive(true);
       stableFrames.current = 0;
       setStatus(e instanceof Error ? e.message : 'Hold steady and try again');
     }
-  }, [onPhotos, photoOutput]);
+  }, [onPhoto, photoOutput]);
 
   const handleText = useCallback((recognizedText: string) => {
     if (locked.current) return;
@@ -315,7 +303,7 @@ function CameraScreen({ onClose, onPhotos, error }: any) {
     try {
       const { filePath } = await photoOutput.capturePhotoToFile({ flashMode: 'off', enableShutterSound: true }, {});
       setActive(false);
-      await onPhotos([filePath]);
+      await onPhoto(filePath);
     } catch (e) {
       locked.current = false;
       setActive(true);
