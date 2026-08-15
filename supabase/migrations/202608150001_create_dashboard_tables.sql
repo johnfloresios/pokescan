@@ -4,8 +4,15 @@ create extension if not exists pgcrypto;
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
-  email text
+  email text,
+  first_name text,
+  last_name text,
+  nickname text
 );
+
+alter table public.profiles add column if not exists first_name text;
+alter table public.profiles add column if not exists last_name text;
+alter table public.profiles add column if not exists nickname text;
 
 create table if not exists public.scanned_cards (
   id uuid primary key default gen_random_uuid(),
@@ -63,9 +70,9 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, email)
-  values (new.id, new.email)
-  on conflict (id) do update set email = excluded.email;
+  insert into public.profiles (id, email, first_name, last_name, nickname)
+  values (new.id, new.email, new.raw_user_meta_data ->> 'first_name', new.raw_user_meta_data ->> 'last_name', new.raw_user_meta_data ->> 'nickname')
+  on conflict (id) do update set email = excluded.email, first_name = excluded.first_name, last_name = excluded.last_name, nickname = excluded.nickname;
   return new;
 end;
 $$;
@@ -79,4 +86,3 @@ for each row execute function public.create_profile_for_new_user();
 insert into public.profiles (id, email)
 select id, email from auth.users
 on conflict (id) do update set email = excluded.email;
-
