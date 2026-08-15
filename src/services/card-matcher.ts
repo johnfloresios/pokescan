@@ -12,6 +12,8 @@ export interface ExtractedCardFields {
   type?: string;
   stage?: string;
   rarity?: string;
+  collectorTotal?: string;
+  numericEvidence?: string[];
   cleanedText: string;
   lines: string[];
 }
@@ -20,6 +22,7 @@ export interface PokeWalletCardInfo {
   name?: string; clean_name?: string; set_name?: string; set_code?: string;
   set_id?: string | number; card_number?: string; rarity?: string; hp?: string;
   card_type?: string; stage?: string;
+  attacks?: Array<{ name?: string; damage?: string; text?: string }>;
 }
 
 export interface PokeWalletSearchCard {
@@ -115,8 +118,11 @@ export function extractCardFields(rawOCRText: string, hints: Partial<ExtractedCa
   const stage = hints.stage ?? clean.cleanedText.match(/\b(basic|stage\s*[12]|vmax|vstar|mega)\b/i)?.[1];
   const rarity = hints.rarity ?? clean.cleanedText.match(/\b(amazing rare|common|uncommon|rare(?: holo| secret| rainbow| ultra| shiny)?)\b/i)?.[1];
   const cardNumber = hints.cardNumber ?? fraction ?? standalone;
+  const collectorTotal = hints.collectorTotal ?? fraction?.split('/')[1]?.replace(/^0+/, '');
+  const numericEvidence = hints.numericEvidence ?? [...new Set(clean.lines.flatMap(line => [...line.matchAll(/\b(\d{1,3})(?=\s*(?:[+x×]|damage|$))/gi)].map(match => match[1].replace(/^0+/, '') || '0')).filter(value => Number(value) >= 10 && Number(value) <= 400))];
   return {
     ...hints, name, cardNumber, numberOnly: hints.numberOnly ?? (cardNumber?.split('/')[0].replace(/^0+/, '') || undefined),
+    collectorTotal, numericEvidence,
     hp, setCode, type: type ? titleCase(type) : undefined, stage: stage ? titleCase(stage) : undefined,
     rarity: rarity ? titleCase(rarity) : undefined, cleanedText: clean.cleanedText, lines: clean.lines,
   };
@@ -137,13 +143,21 @@ export function scorePokeWalletCard(card: PokeWalletSearchCard, fields: Extracte
   const wantedNumber = normalize(fields.numberOnly ?? fields.cardNumber?.split('/')[0]);
   const resultNumber = normalize(info.card_number?.split('/')[0]);
   if (wantedNumber && resultNumber === wantedNumber) score += 100;
+  else if (wantedNumber && resultNumber) score -= 100;
   score += Math.round(similarity(fields.name, info.clean_name ?? info.name) * 40);
   if (fields.hp && info.hp === fields.hp) score += 15;
+  else if (fields.hp && info.hp) score -= 30;
+  const resultTotal = normalize((info as any).set_total ?? (info as any).printed_total);
+  if (fields.collectorTotal && resultTotal === normalize(fields.collectorTotal)) score += 60;
+  else if (fields.collectorTotal && resultTotal) score -= 40;
   if (fields.setCode && similarity(fields.setCode, info.set_code) >= .8) score += 15;
   else if (fields.setName && similarity(fields.setName, info.set_name) >= .7) score += 10;
   if (fields.type && similarity(fields.type, info.card_type) >= .75) score += 10;
   if (fields.stage && similarity(fields.stage, info.stage) >= .75) score += 5;
   if (fields.rarity && similarity(fields.rarity, info.rarity) >= .7) score += 5;
+  const candidateEvidence = JSON.stringify(info.attacks ?? []);
+  const candidateNumbers = new Set(candidateEvidence.match(/\b\d{1,3}\b/g) ?? []);
+  score += Math.min(36, (fields.numericEvidence ?? []).filter(value => candidateNumbers.has(value)).length * 12);
   return score;
 }
 

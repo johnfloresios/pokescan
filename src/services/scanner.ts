@@ -8,6 +8,7 @@ type CardBounds = { x: number; y: number; width: number; height: number };
 export type ScanHints = {
   name?: string; number?: string; setCode?: string; setName?: string;
   rarity?: string; hp?: string; type?: string; stage?: string; evidence?: string;
+  collectorTotal?: string; numericEvidence?: string[];
 };
 export type ScanText = { text: string; lines: string[]; query: string; queries: string[]; hints: ScanHints; cardDetected: boolean; ready: boolean };
 const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string; boxes?: TextBox[]; cardDetected?: boolean; cardBounds?: CardBounds }> }>('CardTextRecognizer');
@@ -98,6 +99,7 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   }).find(Boolean);
 
   const number = fraction ?? (allowStandaloneSerial ? serial : undefined);
+  const collectorTotal = fraction?.split('/')[1]?.replace(/^0+/, '') || undefined;
   const excludedCodes = new Set(['HP', 'EX', 'GX', 'V', 'VMAX', 'VSTAR', 'BASIC', 'STAGE', 'ABILITY']);
   const setCode = [...bottomLines].reverse().map(line => {
     const match = line.match(/^(?:EN\s+)?([A-Z]{2,6}[0-9]{0,2})(?:\s+EN)?$/)?.[1];
@@ -118,6 +120,8 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
     'Destined Rivals', 'Prismatic Evolutions', 'Crown Zenith', 'Lost Origin',
   ];
   const setName = knownSets.find(candidate => clean.some(line => line.toLowerCase().includes(candidate.toLowerCase())));
+  const numericEvidence = [...new Set(clean.flatMap(line => [...line.matchAll(/\b(\d{1,3})(?=\s*(?:[+x×]|damage|$))/gi)].map(match => match[1].replace(/^0+/, '') || '0'))
+    .filter(value => Number(value) >= 10 && Number(value) <= 400 && value !== hp && value !== number?.split('/')[0].replace(/^0+/, '') && value !== collectorTotal))];
   const textFallback = extractCardFields(clean.join('\n'));
   const resolvedName = name ?? textFallback.name;
   const resolvedHp = hp ?? textFallback.hp;
@@ -135,7 +139,7 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
     [number],
   ].map(parts => parts.filter(Boolean).join(' ')).filter(Boolean);
   const queries = [...new Set(candidates)];
-  return { query: queries[0] ?? '', queries, hints: { name: resolvedName, number, setCode, setName, rarity: resolvedRarity, hp: resolvedHp, type: resolvedType, stage: resolvedStage, evidence: clean.join(' ') } };
+  return { query: queries[0] ?? '', queries, hints: { name: resolvedName, number, collectorTotal, numericEvidence, setCode, setName, rarity: resolvedRarity, hp: resolvedHp, type: resolvedType, stage: resolvedStage, evidence: clean.join(' ') } };
 };
 
 export function analyzeLiveText(rawText: string): ScanText {

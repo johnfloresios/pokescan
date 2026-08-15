@@ -28,7 +28,7 @@ function mapCard(raw: any, i = 0): Card {
   const abilities = (x.abilities ?? x.ability ?? []).map ? (x.abilities ?? x.ability ?? []).map((ability: any) => typeof ability === 'string' ? ability : [ability.name, ability.text].filter(Boolean).join(' · ')) : [String(x.ability)];
   const attacks = (x.attacks ?? []).map((attack: any) => typeof attack === 'string' ? attack : [attack.name, attack.damage, attack.text].filter(Boolean).join(' · '));
   const retreat = x.retreat_cost ?? x.retreatCost;
-  return { id: raw.id, name: x.name ?? x.clean_name, setName: x.set_name ?? set.name ?? 'Unknown set', setCode: x.set_code ?? set.ptcgoCode ?? set.id ?? '', number: x.card_number ?? x.number ?? '—', rarity: x.rarity ?? 'Unknown', type: x.card_type ?? x.types?.[0] ?? x.supertype ?? 'Pokémon', hp: x.hp, stage: x.stage ?? x.subtypes?.join(' · '), text: x.card_text ?? x.flavorText ?? x.rules?.join(' '), attacks, weakness: x.weakness ?? x.weaknesses?.map((item: any) => `${item.type} ${item.value}`).join(', '), evolvesFrom: x.evolves_from ?? x.evolvesFrom ?? x.evolution_from, resistance: x.resistance ?? x.resistances?.map((item: any) => `${item.type} ${item.value}`).join(', '), retreatCost: Array.isArray(retreat) ? retreat.join(', ') : retreat, illustrator: x.illustrator ?? x.artist, regulationMark: x.regulation_mark ?? x.regulationMark, abilities, imageUrl: x.images?.large ?? x.images?.small ?? endpoint(`/images/${encodeURIComponent(raw.id)}?size=high`), prices: prices(raw), confidence: Math.max(.55, .96 - i * .08) };
+  return { id: raw.id, name: x.name ?? x.clean_name, setName: x.set_name ?? set.name ?? 'Unknown set', setCode: x.set_code ?? set.ptcgoCode ?? set.id ?? '', number: x.card_number ?? x.number ?? '—', printedTotal: String(x.printed_total ?? x.set_total ?? set.printedTotal ?? set.total ?? ''), rarity: x.rarity ?? 'Unknown', type: x.card_type ?? x.types?.[0] ?? x.supertype ?? 'Pokémon', hp: x.hp, stage: x.stage ?? x.subtypes?.join(' · '), text: x.card_text ?? x.flavorText ?? x.rules?.join(' '), attacks, weakness: x.weakness ?? x.weaknesses?.map((item: any) => `${item.type} ${item.value}`).join(', '), evolvesFrom: x.evolves_from ?? x.evolvesFrom ?? x.evolution_from, resistance: x.resistance ?? x.resistances?.map((item: any) => `${item.type} ${item.value}`).join(', '), retreatCost: Array.isArray(retreat) ? retreat.join(', ') : retreat, illustrator: x.illustrator ?? x.artist, regulationMark: x.regulation_mark ?? x.regulationMark, abilities, imageUrl: x.images?.large ?? x.images?.small ?? endpoint(`/images/${encodeURIComponent(raw.id)}?size=high`), prices: prices(raw), confidence: Math.max(.55, .96 - i * .08) };
 }
 export async function searchCards(query: string): Promise<Card[]> {
   assertConfigured();
@@ -47,25 +47,37 @@ export function rankCards(cards: Card[], hints: ScanHints): Card[] {
   const wantedType = normalized(hints.type);
   const wantedRarity = normalized(hints.rarity);
   const wantedStage = normalized(hints.stage);
+  const wantedTotal = normalized(hints.collectorTotal);
+  const wantedNumbers = new Set(hints.numericEvidence ?? []);
   const evidenceWords = words(hints.evidence);
-  return cards.map((card, index) => {
+  const scored = cards.map((card, index) => {
     let score = 100 - index;
-    if (wantedNumber && normalized(card.number.split('/')[0]) === wantedNumber) score += 100;
+    const resultNumber = normalized(card.number.split('/')[0]);
+    if (wantedNumber && resultNumber === wantedNumber) score += 100;
+    else if (wantedNumber && resultNumber) score -= 100;
     if (wantedName && normalized(card.name) === wantedName) score += 40;
     else if (wantedName) score += Math.round(similarity(hints.name, card.name) * 40);
     if (wantedSet && normalized(card.setCode) === wantedSet) score += 50;
     if (wantedSetName && normalized(card.setName).includes(wantedSetName)) score += 45;
+    if (wantedTotal && normalized(card.printedTotal) === wantedTotal) score += 60;
+    else if (wantedTotal && card.printedTotal) score -= 40;
     if (hints.hp && card.hp === hints.hp) score += 25;
+    else if (hints.hp && card.hp) score -= 30;
     if (wantedType && normalized(card.type).includes(wantedType)) score += 20;
     if (wantedRarity && normalized(card.rarity).includes(wantedRarity)) score += 18;
     if (wantedStage && normalized(card.stage).includes(wantedStage)) score += 15;
     const cardEvidence = [card.rarity, card.setName, card.text, card.evolvesFrom, ...(card.abilities ?? []), ...(card.attacks ?? [])].filter(Boolean).join(' ');
     const evidenceMatches = [...words(cardEvidence)].filter(word => evidenceWords.has(word)).length;
     score += Math.min(30, evidenceMatches * 5);
+    const resultNumbers = new Set((cardEvidence.match(/\b\d{1,3}\b/g) ?? []).map(value => value.replace(/^0+/, '') || '0'));
+    const numericMatches = [...wantedNumbers].filter(value => resultNumbers.has(value)).length;
+    score += Math.min(36, numericMatches * 12);
     return { card, score };
-  }).sort((a, b) => b.score - a.score).map(({ card }, index) => ({
+  }).sort((a, b) => b.score - a.score);
+  const bestScore = scored[0]?.score ?? 0;
+  return scored.filter(item => item.score >= Math.max(80, bestScore - 55)).slice(0, 5).map(({ card, score }, index) => ({
     ...card,
-    confidence: Math.max(.55, .96 - index * .08),
+    confidence: Math.max(.55, Math.min(.99, .58 + score / 400 - index * .04)),
   }));
 }
 export async function getCard(id: string): Promise<Card> {
