@@ -196,6 +196,18 @@ npm run supabase:push
 
 Your project reference is the identifier in the Supabase dashboard URL. Subsequent database migrations only require `npm run supabase:push`.
 
+### Collection and Pro entitlements
+
+The Collection screen uses server-backed search, pagination, set/rarity filters,
+portfolio statistics, and quantity-aware values. Apply the latest metadata fields
+with `npm run supabase:push` before running this version against an existing project.
+
+Pro features are locked by default through `src/hooks/useEntitlements.ts`. Screens
+should call `canUse(feature)` instead of checking purchase providers directly. The
+hook exposes placeholders for eligibility checks and restoring purchases so a
+verified App Store or RevenueCat implementation can be added without refactoring
+feature screens.
+
 ## Reusable OCR matcher
 
 [`src/services/card-matcher.ts`](src/services/card-matcher.ts) exports pure, unit-testable OCR cleanup, parsing, query-building, Levenshtein similarity, scoring, and confidence functions. It also provides a complete PokéWallet search orchestrator:

@@ -19,18 +19,28 @@ create table if not exists public.scanned_cards (
   user_id uuid not null references public.profiles(id) on delete cascade,
   card_name text not null,
   set_name text not null,
+  set_code text,
   set_number text not null,
+  rarity text,
   image_url text,
   price_estimate numeric(12, 2) not null default 0,
+  price_change_24h numeric(8, 3),
   quantity integer not null default 1,
-  condition text not null default 'Near Mint',
+  condition text not null default 'NM',
   variant text not null default 'Normal',
+  notes text,
+  is_graded boolean not null default false,
   created_at timestamptz not null default now()
 );
 
 alter table public.scanned_cards add column if not exists quantity integer not null default 1;
-alter table public.scanned_cards add column if not exists condition text not null default 'Near Mint';
+alter table public.scanned_cards add column if not exists condition text not null default 'NM';
 alter table public.scanned_cards add column if not exists variant text not null default 'Normal';
+alter table public.scanned_cards add column if not exists notes text;
+alter table public.scanned_cards add column if not exists set_code text;
+alter table public.scanned_cards add column if not exists rarity text;
+alter table public.scanned_cards add column if not exists price_change_24h numeric(8, 3);
+alter table public.scanned_cards add column if not exists is_graded boolean not null default false;
 
 create index if not exists scanned_cards_user_created_idx
   on public.scanned_cards (user_id, created_at desc);
