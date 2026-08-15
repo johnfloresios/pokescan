@@ -22,8 +22,15 @@ create table if not exists public.scanned_cards (
   set_number text not null,
   image_url text,
   price_estimate numeric(12, 2) not null default 0,
+  quantity integer not null default 1,
+  condition text not null default 'Near Mint',
+  variant text not null default 'Normal',
   created_at timestamptz not null default now()
 );
+
+alter table public.scanned_cards add column if not exists quantity integer not null default 1;
+alter table public.scanned_cards add column if not exists condition text not null default 'Near Mint';
+alter table public.scanned_cards add column if not exists variant text not null default 'Normal';
 
 create index if not exists scanned_cards_user_created_idx
   on public.scanned_cards (user_id, created_at desc);
