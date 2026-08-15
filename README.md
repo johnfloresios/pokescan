@@ -168,6 +168,34 @@ npx eas-cli@latest submit --platform ios
 
 The proxy must attach the private `X-API-Key` header and pass through `/search`, `/cards/:id`, and `/images/:id`. It must preserve query strings and image content types. Card details display available evolution lineage, abilities, attacks, weakness, resistance, retreat cost, illustrator, and regulation mark returned by PokéWallet. pokeScan requires a configured API key or proxy and never returns built-in mock results.
 
+## Supabase dashboard
+
+Set the development project URL and publishable/anon key in `.env`:
+
+```bash
+EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=replace_with_your_publishable_or_anon_key
+```
+
+Install the React Native Supabase dependencies and rebuild the development app:
+
+```bash
+npx expo install @supabase/supabase-js @react-native-async-storage/async-storage react-native-url-polyfill
+npx expo run:ios --device
+```
+
+Enable Row Level Security on `profiles` and `scanned_cards`. Policies for `scanned_cards` should restrict reads and writes to `auth.uid() = user_id`; client-side `.eq('user_id', userId)` filtering is not a security boundary.
+
+The database migration is included at `supabase/migrations/202608150001_create_dashboard_tables.sql`. Link this repository to your Supabase project once, then push it:
+
+```bash
+npx supabase login
+npx supabase link --project-ref YOUR_PROJECT_REF
+npm run supabase:push
+```
+
+Your project reference is the identifier in the Supabase dashboard URL. Subsequent database migrations only require `npm run supabase:push`.
+
 ## Reusable OCR matcher
 
 [`src/services/card-matcher.ts`](src/services/card-matcher.ts) exports pure, unit-testable OCR cleanup, parsing, query-building, Levenshtein similarity, scoring, and confidence functions. It also provides a complete PokéWallet search orchestrator:
