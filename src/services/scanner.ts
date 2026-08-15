@@ -9,6 +9,7 @@ export type ScanHints = {
   name?: string; number?: string; setCode?: string; setId?: string; setName?: string;
   rarity?: string; hp?: string; type?: string; stage?: string; evidence?: string;
   collectorTotal?: string; numericEvidence?: string[]; bottomIdentifier?: string;
+  cardKind?: 'pokemon'|'trainer'|'energy'; regulationMark?: string;
 };
 export type ScanText = { text: string; lines: string[]; query: string; queries: string[]; hints: ScanHints; cardDetected: boolean; ready: boolean };
 const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string; bottomText?: string; boxes?: TextBox[]; cardDetected?: boolean; cardBounds?: CardBounds }> }>('CardTextRecognizer');
@@ -59,9 +60,10 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const fraction = fractionLine?.match(/\d{1,3}\s*\/\s*\d{1,3}/)?.[0];
   // Header labels are frequently returned as partial words (for example
   // "BAS" from BASIC). Never allow those fragments to become a card name.
-  const ignored = /^(?:bas(?:i|1|l)?(?:c)?|sta(?:g(?:e)?)?\s*\d*|evo(?:lves?)?\s*(?:from)?|trainer|item|supporter|energy|ability|weakness|resistance|retreat|hp\s*\d+|illus\.?|no\.?|©)(?:\b|$)/i;
+  const ignored = /^(?:bas(?:i|1|l)?(?:c)?|sta(?:g(?:e)?)?\s*\d*|evo(?:lves?)?\s*(?:from)?|trainer|item|supporter|stadium|special energy|basic energy|ability|weakness|resistance|retreat|hp\s*\d+|illus\.?|no\.?|©)$/i;
   const titleFromLine = (line: string) => line
     .replace(/^(?:BASIC|STAGE\s*\d*)\s+/i, '')
+    .replace(/^(?:TRAINER|ITEM|SUPPORTER|STADIUM)\s*[-:·]?\s+/i, '')
     .replace(/\bHP\s*\d{2,3}\b/ig, '')
     .replace(/\b\d{2,3}\s*HP\b/ig, '')
     .replace(/\s+/g, ' ')
@@ -76,7 +78,7 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const validName = (value: string) => {
     const letters = value.replace(/[^A-Za-zÀ-ÿ]/g, '');
     const suspiciousHeaderCode = letters.length <= 6 && letters === letters.toUpperCase();
-    return /^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .:'’\-]{2,32}$/.test(value)
+    return /^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .:'’&\-]{2,40}$/.test(value)
       && !ignored.test(value)
       && !suspiciousHeaderCode
       && value.split(/\s+/).length <= 4;
@@ -101,10 +103,12 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
 
   const number = fraction ?? (allowStandaloneSerial ? serial : undefined);
   const collectorTotal = fraction?.split('/')[1]?.replace(/^0+/, '') || undefined;
-  const excludedCodes = new Set(['HP', 'EX', 'GX', 'V', 'VMAX', 'VSTAR', 'BASIC', 'STAGE', 'ABILITY']);
+  const excludedCodes = new Set(['HP', 'EX', 'GX', 'V', 'VMAX', 'VSTAR', 'BASIC', 'STAGE', 'ABILITY', 'TRAINER', 'ITEM', 'ILLUS', 'G', 'H', 'I']);
+  const alphabeticSetCodes = new Set(['SVI','PAL','OBF','MEW','PAR','PAF','TEF','TWM','SFA','SCR','SSP','PRE','JTG','DRI']);
   const setCode = [...bottomLines].reverse().map(line => {
     const match = line.match(/^(?:EN\s+)?([A-Z]{1,6}[0-9]{0,3}[A-Z]?)(?:\s+EN)?$/i)?.[1];
-    return match && !excludedCodes.has(match.toUpperCase()) ? match : undefined;
+    const upper=match?.toUpperCase();
+    return match && upper && !excludedCodes.has(upper) && (/\d/.test(match)||alphabeticSetCodes.has(upper)) ? match : undefined;
   }).find(Boolean);
   const promoIdentifier = bottomLines.map(line => line.toUpperCase().replace(/[^A-Z0-9]/g, '')).find(line => /^(?:DP|SWSH|SM|XY|BW|HGSS)\d{1,3}$/.test(line));
   const identifierMatch = bottomLines.map(line => normalizeCardLine(line).match(/\b([A-Z]{1,6}\d{0,3}[A-Z]?)\s+[- ]?\s*(\d{1,3}(?:\s*\/\s*\d{1,3})?)\b/i)).find(Boolean);
@@ -114,6 +118,14 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const resolvedNumber = fraction ?? identifierMatch?.[2]?.replace(/\s/g, '') ?? promoParts?.[2] ?? number;
   const resolvedSetCode = identifierMatch?.[1] ?? promoParts?.[1] ?? setCode;
   const setId = bottomLines.map(line => line.match(/\bset\s*(?:id)?\s*[:#-]?\s*(\d{4,8})\b/i)?.[1]).find(Boolean);
+  const regulationMark = bottomLines.map(line => line.match(/^(?:REGULATION\s*)?([GHI])$/i)?.[1]?.toUpperCase()).find(Boolean);
+
+  const joined=clean.join(' ');
+  const cardKind:ScanHints['cardKind'] = /\b(?:TRAINER|ITEM|SUPPORTER|STADIUM|TRAINER RULE|ITEM RULE|SUPPORTER RULE)\b/i.test(joined)
+    ? 'trainer'
+    : /\b(?:BASIC|SPECIAL)\s+ENERGY\b|\bENERGY\s+CARD\b/i.test(joined)
+      ? 'energy'
+      : 'pokemon';
 
   const hp = clean.map(line => line.match(/\bHP\s*([0-9OIl]{2,3})\b/i)?.[1])
     .find(Boolean)?.replace(/O/gi, '0').replace(/[Il]/g, '1');
@@ -141,13 +153,14 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const candidates = [
     setId && resolvedNumber ? `${setId} ${resolvedNumber.split('/')[0]}` : '',
     promoIdentifier ?? '',
+    cardKind!=='pokemon' && resolvedName && resolvedSetCode && resolvedNumber ? `${resolvedName} ${resolvedSetCode} ${resolvedNumber}` : '',
     resolvedSetCode && resolvedNumber ? `${resolvedSetCode} ${resolvedNumber}` : '',
     resolvedName && resolvedSetCode ? `${resolvedName} ${resolvedSetCode}` : '',
     resolvedName && resolvedNumber ? `${resolvedName} ${resolvedNumber}` : '',
     resolvedName ?? '',
   ].filter(Boolean);
   const queries = [...new Set(candidates)];
-  return { query: queries[0] ?? '', queries, hints: { name: resolvedName, number: resolvedNumber, collectorTotal, bottomIdentifier, numericEvidence, setCode: resolvedSetCode, setId, setName, rarity: resolvedRarity, hp: resolvedHp, type: resolvedType, stage: resolvedStage, evidence: clean.join(' ') } };
+  return { query: queries[0] ?? '', queries, hints: { name: resolvedName, number: resolvedNumber, collectorTotal, bottomIdentifier, numericEvidence, setCode: resolvedSetCode, setId, setName, rarity: resolvedRarity, hp: cardKind==='pokemon'?resolvedHp:undefined, type: resolvedType, stage: cardKind==='pokemon'?resolvedStage:undefined, cardKind, regulationMark, evidence: joined } };
 };
 
 export function analyzeLiveText(rawText: string): ScanText {

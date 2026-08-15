@@ -113,7 +113,9 @@ function Brand({ dark = false }: { dark?: boolean }) {
 }
 
 function BottomNav({active,onHome,onCollection,onScan}:{active:'home'|'collection'|'other';onHome:()=>void;onCollection:()=>void;onScan:()=>void}) {
-  return <View style={s.bottomNav}><Pressable onPress={onHome} style={s.navItem}><Feather name="home" size={20} color={active==='home'?C.yellow:C.muted}/><Text style={[s.navText,active==='home'&&{color:C.yellow}]}>Home</Text></Pressable><Pressable onPress={onCollection} style={s.navItem}><Feather name="layers" size={20} color={active==='collection'?C.yellow:C.muted}/><Text style={[s.navText,active==='collection'&&{color:C.yellow}]}>Collection</Text></Pressable><Pressable onPress={onScan} style={s.navItem}><MaterialCommunityIcons name="line-scan" size={20} color={C.muted}/><Text style={s.navText}>Scan</Text></Pressable></View>;
+  const sell=()=>Alert.alert('Sell cards','The selling marketplace is coming soon.');
+  const itemStyle=[s.navItem,{flex:1,width:undefined}];
+  return <View style={s.bottomNav}><Pressable onPress={onHome} style={itemStyle}><Feather name="home" size={20} color={active==='home'?C.yellow:C.muted}/><Text style={[s.navText,active==='home'&&{color:C.yellow}]}>Home</Text></Pressable><Pressable onPress={onCollection} style={itemStyle}><Feather name="layers" size={20} color={active==='collection'?C.yellow:C.muted}/><Text style={[s.navText,active==='collection'&&{color:C.yellow}]}>Collection</Text></Pressable><Pressable onPress={onScan} style={itemStyle}><MaterialCommunityIcons name="line-scan" size={20} color={C.muted}/><Text style={s.navText}>Scan</Text></Pressable><Pressable onPress={sell} style={itemStyle}><Feather name="tag" size={20} color={C.green}/><Text style={[s.navText,{color:C.green}]}>Sell</Text></Pressable></View>;
 }
 
 type ScannedCardRow = { id:string;card_name:string;set_name:string;set_number:string;image_url:string|null;price_estimate:number|string|null;created_at:string };

@@ -17,7 +17,9 @@ public class CardTextRecognizerModule: Module {
       request.recognitionLanguages = ["en-US"]
       request.customWords = [
         "ex", "EX", "GX", "V", "VMAX", "VSTAR", "BREAK",
-        "Mega", "Radiant", "Shining", "Hisuian", "Galarian", "Paldean"
+        "Mega", "Radiant", "Shining", "Hisuian", "Galarian", "Paldean",
+        "TRAINER", "Item", "Supporter", "Stadium", "Basic Energy", "Special Energy",
+        "Energy Retrieval", "Rare Candy", "Ultra Ball", "Professor's Research"
       ]
       request.minimumTextHeight = 0.006
       let orientation = image.cgImageOrientation

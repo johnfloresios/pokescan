@@ -13,6 +13,8 @@ export interface ExtractedCardFields {
   type?: string;
   stage?: string;
   rarity?: string;
+  cardKind?: 'pokemon'|'trainer'|'energy';
+  regulationMark?: string;
   collectorTotal?: string;
   numericEvidence?: string[];
   cleanedText: string;
@@ -108,8 +110,8 @@ export function extractCardFields(rawOCRText: string, hints: Partial<ExtractedCa
   const fraction = [...bottom, ...clean.lines].map(repairNumber).map(line => line.match(/\b\d{1,3}\s*[/|]\s*\d{1,3}\b/)?.[0]).find(Boolean)?.replace(/\s/g, '').replace('|', '/');
   const standalone = bottom.map(repairNumber).map(line => line.match(/^(?:no\.?\s*|#\s*)?(\d{2,3})$/i)?.[1]).find(Boolean);
   const header = clean.lines.slice(0, Math.max(3, Math.ceil(clean.lines.length * .25)));
-  const ignored = /^(?:bas(?:ic)?|sta(?:ge)?\s*\d*|evolves?|hp|trainer|energy|ability|weakness|resistance|retreat|illus)/i;
-  const rawName = header.map(line => line.replace(/\bHP\s*[0-9OIl]{2,3}\b/ig, '').replace(/^(?:BASIC|STAGE\s*\d*)\s+/i, '').trim())
+  const ignored = /^(?:bas(?:ic)?|sta(?:ge)?\s*\d*|evolves?|hp|trainer|item|supporter|stadium|basic energy|special energy|ability|weakness|resistance|retreat|illus)$/i;
+  const rawName = header.map(line => line.replace(/\bHP\s*[0-9OIl]{2,3}\b/ig, '').replace(/^(?:BASIC|STAGE\s*\d*)\s+/i, '').replace(/^(?:TRAINER|ITEM|SUPPORTER|STADIUM)\s*[-:·]?\s+/i,'').trim())
     .find(line => /^[A-Za-z][A-Za-z .:'’\-]{2,31}$/.test(line) && !ignored.test(line));
   const correctionKey = normalize(rawName);
   const name = hints.name ?? NAME_CORRECTIONS[correctionKey] ?? (rawName ? titleCase(rawName) : undefined);
@@ -119,11 +121,13 @@ export function extractCardFields(rawOCRText: string, hints: Partial<ExtractedCa
   const stage = hints.stage ?? clean.cleanedText.match(/\b(basic|stage\s*[12]|vmax|vstar|mega)\b/i)?.[1];
   const rarity = hints.rarity ?? clean.cleanedText.match(/\b(amazing rare|common|uncommon|rare(?: holo| secret| rainbow| ultra| shiny)?)\b/i)?.[1];
   const cardNumber = hints.cardNumber ?? fraction ?? standalone;
+  const cardKind = hints.cardKind ?? (/\b(?:trainer|item|supporter|stadium|trainer rule|item rule|supporter rule)\b/i.test(clean.cleanedText) ? 'trainer' : /\b(?:basic|special) energy\b/i.test(clean.cleanedText) ? 'energy' : 'pokemon');
+  const regulationMark = hints.regulationMark ?? bottom.map(line=>line.match(/^(?:regulation\s*)?([GHI])$/i)?.[1]?.toUpperCase()).find(Boolean);
   const collectorTotal = hints.collectorTotal ?? fraction?.split('/')[1]?.replace(/^0+/, '');
   const numericEvidence = hints.numericEvidence ?? [...new Set(clean.lines.flatMap(line => [...line.matchAll(/\b(\d{1,3})(?=\s*(?:[+x×]|damage|$))/gi)].map(match => match[1].replace(/^0+/, '') || '0')).filter(value => Number(value) >= 10 && Number(value) <= 400))];
   return {
     ...hints, name, cardNumber, numberOnly: hints.numberOnly ?? (cardNumber?.split('/')[0].replace(/^0+/, '') || undefined),
-    collectorTotal, numericEvidence,
+    collectorTotal, numericEvidence, cardKind, regulationMark,
     hp, setCode, type: type ? titleCase(type) : undefined, stage: stage ? titleCase(stage) : undefined,
     rarity: rarity ? titleCase(rarity) : undefined, cleanedText: clean.cleanedText, lines: clean.lines,
   };
@@ -132,6 +136,7 @@ export function extractCardFields(rawOCRText: string, hints: Partial<ExtractedCa
 export function buildCascadingQueries(fields: ExtractedCardFields): string[] {
   const values = [
     fields.setId && fields.numberOnly ? `${fields.setId} ${fields.numberOnly}` : '',
+    fields.cardKind!=='pokemon' && fields.name && fields.setCode && fields.cardNumber ? `${fields.name} ${fields.setCode} ${fields.cardNumber}` : '',
     fields.setCode && fields.cardNumber ? `${fields.setCode} ${fields.cardNumber}` : '',
     fields.name && fields.setCode ? `${fields.name} ${fields.setCode}` : '',
     fields.name && fields.cardNumber ? `${fields.name} ${fields.cardNumber}` : '',
