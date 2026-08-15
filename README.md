@@ -1,4 +1,6 @@
-# pokeScan
+# NicePull
+
+**Know what you've pulled.**
 
 A React Native Pokémon card scanner that uses VisionCamera, Nitro Modules, on-device live OCR, and PokéWallet for card matching, images, details, and pricing.
 
@@ -36,7 +38,7 @@ Restart Expo with `--clear` after changing `.env`.
 
 ## Enable real camera scanning
 
-pokeScan does not return mock OCR, cards, or prices. Live frames run through VisionCamera v5 and its Nitro-powered on-device OCR pipeline. The app waits for the same character name and collector number across two processed frames, captures a full-resolution still through Nitro Image, and only then sends the extracted identifiers to PokéWallet.
+NicePull does not return mock OCR, cards, or prices. Live frames run through VisionCamera v5 and its Nitro-powered on-device OCR pipeline. The app waits for the same character name and collector number across two processed frames, captures a full-resolution still through Nitro Image, and only then sends the extracted identifiers to PokéWallet.
 
 Install the native camera, Nitro, and worklet dependencies:
 
@@ -77,7 +79,7 @@ After the development build is installed on the iPhone, start Metro with:
 npx expo start --dev-client --clear
 ```
 
-Open the installed **pokeScan development build**, not Expo Go. Point the camera at a card and align it within the frame. A moving cyan beam shows that live OCR is active. OCR is restricted to the visible guide region and runs every sixth camera frame. pokeScan proceeds only after two frames agree on both the character name and bottom collector number. No shutter press is required, and weak or unstable frames never trigger PokéWallet requests. The shutter remains available as a manual fallback. pokeScan will:
+Open the installed **NicePull development build**, not Expo Go. Point the camera at a card and align it within the frame. A moving cyan beam shows that live OCR is active. OCR is restricted to the visible guide region and runs every sixth camera frame. NicePull proceeds only after two frames agree on both the character name and bottom collector number. No shutter press is required, and weak or unstable frames never trigger PokéWallet requests. The shutter remains available as a manual fallback. NicePull will:
 
 1. Capture the real camera image.
 2. Extract text locally with the Nitro-powered live OCR processor.
@@ -87,7 +89,7 @@ Open the installed **pokeScan development build**, not Expo Go. Point the camera
 
 The OCR layer includes targeted correction for Pokémon TCG suffixes such as `ex`, `GX`, `VMAX`, and `VSTAR`, plus collector-number character corrections. Live OCR is cropped to the physical guide frame, and two consecutive frames must agree before capture. Collector numbers remain mandatory for automatic capture. If the title or bottom number is unreadable, auto-scan keeps gathering frames instead of sending a weak query. Results are reranked using the detected number, name, set, HP, rarity, attacks, evolution, and matching description words. For best results, fill most of the guide frame with the card, keep both the top name and bottom collector number sharp, and tilt the card slightly if a foil surface creates glare.
 
-If `.env` is missing, the API key is rejected, OCR cannot read the card, or PokéWallet returns an error, pokeScan displays the real error instead of fallback data.
+If `.env` is missing, the API key is rejected, OCR cannot read the card, or PokéWallet returns an error, NicePull displays the real error instead of fallback data.
 
 ### Build real scanning from Linux or Windows
 
@@ -166,7 +168,7 @@ npx eas-cli@latest submit --platform ios
 
 ## PokéWallet proxy requirements
 
-The proxy must attach the private `X-API-Key` header and pass through `/search`, `/cards/:id`, and `/images/:id`. It must preserve query strings and image content types. Card details display available evolution lineage, abilities, attacks, weakness, resistance, retreat cost, illustrator, and regulation mark returned by PokéWallet. pokeScan requires a configured API key or proxy and never returns built-in mock results.
+The proxy must attach the private `X-API-Key` header and pass through `/search`, `/cards/:id`, and `/images/:id`. It must preserve query strings and image content types. Card details display available evolution lineage, abilities, attacks, weakness, resistance, retreat cost, illustrator, and regulation mark returned by PokéWallet. NicePull requires a configured API key or proxy and never returns built-in mock results.
 
 ## Supabase dashboard
 
