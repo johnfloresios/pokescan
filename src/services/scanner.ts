@@ -207,3 +207,36 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
     ready: Boolean(search.hints.name && search.hints.number) && (cardDetected || lines.length >= 4),
   };
 }
+
+/** Merge several still-photo OCR passes before any remote search is made. */
+export function combineCardScans(scans: ScanText[]): ScanText {
+  if (!scans.length) throw new Error('No card photos were captured.');
+  const pick = (values: Array<string | undefined>) => {
+    const candidates = values.filter((value): value is string => Boolean(value?.trim()));
+    const counts = new Map<string,{value:string;count:number}>();
+    for (const value of candidates) {
+      const key=value.toLowerCase().replace(/[^a-z0-9/]/g,'');
+      const existing=counts.get(key);counts.set(key,{value,count:(existing?.count??0)+1});
+    }
+    return [...counts.values()].sort((a,b)=>b.count-a.count||b.value.length-a.value.length)[0]?.value;
+  };
+  const lines=[...new Set(scans.flatMap(scan=>scan.lines))];
+  const hints:ScanHints={
+    name:pick(scans.map(scan=>scan.hints.name)),number:pick(scans.map(scan=>scan.hints.number)),
+    bottomIdentifier:pick(scans.map(scan=>scan.hints.bottomIdentifier)),setCode:pick(scans.map(scan=>scan.hints.setCode)),
+    setName:pick(scans.map(scan=>scan.hints.setName)),hp:pick(scans.map(scan=>scan.hints.hp)),
+    type:pick(scans.map(scan=>scan.hints.type)),stage:pick(scans.map(scan=>scan.hints.stage)),
+    rarity:pick(scans.map(scan=>scan.hints.rarity)),collectorTotal:pick(scans.map(scan=>scan.hints.collectorTotal)),
+    numericEvidence:[...new Set(scans.flatMap(scan=>scan.hints.numericEvidence??[]))],
+    evidence:lines.join(' '),
+  };
+  const priorityQueries=[
+    hints.bottomIdentifier,
+    [hints.setCode,hints.number?.split('/')[0]].filter(Boolean).join(' '),
+    [hints.name,hints.number].filter(Boolean).join(' '),
+    ...scans.flatMap(scan=>scan.queries),
+    hints.name,
+  ].filter((value):value is string=>Boolean(value?.trim()));
+  const queries=[...new Set(priorityQueries)];
+  return {text:scans.map(scan=>scan.text).join('\n'),lines,query:queries[0]??'',queries,hints,cardDetected:scans.some(scan=>scan.cardDetected),ready:Boolean(hints.name&&(hints.number||hints.bottomIdentifier))};
+}
