@@ -69,7 +69,10 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   // rather than the entire printed fraction ("196/165"). Collector numbers
   // are printed near the bottom, so only consider standalone values late in
   // the OCR order and reject values labeled as HP, damage, weakness, or rules.
-  const serial = [...bottomLines].reverse().map(line => {
+  const serialLines = cardBounds
+    ? normalizedBoxes.filter(box => cardRelativeY(box) <= .18).sort((a, b) => b.y - a.y || a.x - b.x).map(box => box.text)
+    : [];
+  const serial = [...serialLines].reverse().map(line => {
     if (/\b(?:hp|damage|weakness|resistance|retreat|rule)\b/i.test(line)) return undefined;
     return line.match(/^(?:no\.?\s*|#\s*)?(\d{2,3})(?:\s*[A-Z]{1,3})?$/i)?.[1];
   }).find(Boolean);

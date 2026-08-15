@@ -23,7 +23,6 @@ export default function App() {
   const [matches, setMatches] = useState<Card[]>([]);
   const [selected, setSelected] = useState<Card | null>(null);
   const [error, setError] = useState('');
-  const captureInProgress = useRef(false);
 
   const searchWithScan = async (actual: string, scan?: ScanText) => {
     setError(''); setScreen('analyzing'); setQuery(actual);
@@ -52,25 +51,12 @@ export default function App() {
     if (!hasPermission) { const granted = await requestPermission(); if (!granted) return; }
     setError(''); setScreen('camera');
   };
-  const acceptLiveScan = async (scan: ScanText) => {
-    if (captureInProgress.current) return;
-    captureInProgress.current = true;
-    try {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      await searchWithScan(scan.query, scan);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'PokéWallet search failed.');
-      setScreen('camera');
-    } finally {
-      captureInProgress.current = false;
-    }
-  };
   const choose = async (card: Card) => {
     await Haptics.selectionAsync(); setSelected(card); setScreen('detail');
     try { setSelected(await getCard(card.id)); } catch { /* search data is still useful */ }
   };
 
-  if (screen === 'camera') return <CameraScreen onClose={() => setScreen('home')} onDetected={acceptLiveScan} onManualPhoto={(path: string) => lookup('', `file://${path}`)} error={error} />;
+  if (screen === 'camera') return <CameraScreen onClose={() => setScreen('home')} onPhoto={(path: string) => lookup('', `file://${path}`)} error={error} />;
   if (screen === 'analyzing') return <Analyzing />;
   if (screen === 'matches') return <Matches query={query} cards={matches} onBack={() => setScreen('home')} onSelect={choose} onSearch={lookup} />;
   if (screen === 'detail' && selected) return <Detail card={selected} onBack={() => setScreen('matches')} />;
@@ -123,7 +109,7 @@ function ScannerBeam() {
   return <Animated.View style={[s.scanLine, { transform: [{ translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [8, (W - 58) * 88 / 63 - 18] }) }] }]}><LinearGradient colors={['transparent', C.cyan, C.white, C.cyan, 'transparent']} start={{x:0,y:0}} end={{x:1,y:0}} style={StyleSheet.absoluteFill}/></Animated.View>;
 }
 
-function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
+function CameraScreen({ onClose, onPhoto, error }: any) {
   const camera = useRef<CameraRef>(null);
   const device = useCameraDevice('back', { physicalDevices: ['wide-angle'] });
   const photoOutput = usePhotoOutput({ targetResolution: { width: 4032, height: 3024 }, containerFormat: 'jpeg', qualityPrioritization: 'balanced', quality: .95 });
@@ -143,33 +129,35 @@ function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
   const finishScan = useCallback(async (scan: ScanText) => {
     if (locked.current) return;
     locked.current = true;
-    setStatus(`Locked: ${scan.query}`);
+    setStatus('Card detected · reading bottom details…');
     try {
-      await photoOutput.capturePhotoToFile({ flashMode: 'off', enableShutterSound: true }, {});
+      const { filePath } = await photoOutput.capturePhotoToFile({ flashMode: 'off', enableShutterSound: true }, {});
       setActive(false);
-      await onDetected(scan);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await onPhoto(filePath);
     } catch (e) {
       locked.current = false;
       setActive(true);
       stableFrames.current = 0;
       setStatus(e instanceof Error ? e.message : 'Hold steady and try again');
     }
-  }, [onDetected, photoOutput]);
+  }, [onPhoto, photoOutput]);
 
   const handleText = useCallback((recognizedText: string) => {
     if (locked.current) return;
     const scan = analyzeLiveText(recognizedText);
-    if (!scan.ready) {
+    if (!scan.cardDetected || !scan.hints.name) {
       stableFrames.current = 0;
       lastSignature.current = '';
-      setStatus(scan.hints.name ? 'Name found · reading bottom number…' : 'Reading character name…');
+      setStatus('Reading character name…');
       return;
     }
-    const signature = `${scan.hints.name?.toLowerCase()}|${scan.hints.number}`;
+    const signature = scan.hints.name.toLowerCase();
     stableFrames.current = signature === lastSignature.current ? stableFrames.current + 1 : 1;
     lastSignature.current = signature;
-    setStatus(stableFrames.current >= 2 ? 'Card identified · capturing…' : `Verifying ${scan.query}…`);
-    if (stableFrames.current >= 2) void finishScan(scan);
+    const requiredFrames = scan.hints.number ? 2 : 3;
+    setStatus(stableFrames.current >= requiredFrames ? 'Card stable · capturing details…' : `Found ${scan.hints.name} · hold steady…`);
+    if (stableFrames.current >= requiredFrames) void finishScan(scan);
   }, [finishScan]);
 
   const frameOutput = useFrameOutput({
@@ -204,7 +192,7 @@ function CameraScreen({ onClose, onDetected, onManualPhoto, error }: any) {
     try {
       const { filePath } = await photoOutput.capturePhotoToFile({ flashMode: 'off', enableShutterSound: true }, {});
       setActive(false);
-      await onManualPhoto(filePath);
+      await onPhoto(filePath);
     } catch (e) {
       locked.current = false;
       setActive(true);

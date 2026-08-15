@@ -43,7 +43,9 @@ public class CardTextRecognizerModule: Module {
         "ex", "EX", "GX", "V", "VMAX", "VSTAR", "BREAK",
         "Mega", "Radiant", "Shining", "Hisuian", "Galarian", "Paldean"
       ]
-      request.minimumTextHeight = 0.012
+      // Collector numbers and set codes are the smallest print on the card.
+      // Keep the threshold low enough for the bottom-left line at full photo resolution.
+      request.minimumTextHeight = 0.006
       let orientation = image.cgImageOrientation
       DispatchQueue.global(qos: .userInitiated).async {
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation)
