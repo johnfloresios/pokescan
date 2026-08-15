@@ -8,6 +8,22 @@ const key = process.env.EXPO_PUBLIC_POKEWALLET_API_KEY?.trim();
 
 function headers(): Record<string,string> { return key ? { 'X-API-Key': key } : {}; }
 function endpoint(path: string) { return `${proxy || BASE}${path}`; }
+function plainText(value: unknown): string {
+  if (value == null) return '';
+  return String(value)
+    .replace(/<br\s*\/?>/gi, ' · ')
+    .replace(/<\/p\s*>/gi, ' · ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s*·\s*(?:·\s*)+/g, ' · ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 function assertConfigured() {
   if (!proxy && !key) {
     throw new Error('PokéWallet is not configured. Add EXPO_PUBLIC_POKEWALLET_API_KEY to .env and restart Expo.');
@@ -27,10 +43,10 @@ function mapCard(raw: any, i = 0): Card {
   const set = x.set ?? raw.set ?? {};
   const imageUrl = x.images?.large ?? raw.images?.large ?? x.image_url ?? raw.image_url ?? x.image ?? raw.image
     ?? x.images?.small ?? raw.images?.small ?? endpoint(`/images/${encodeURIComponent(raw.id)}?size=high`);
-  const abilities = (x.abilities ?? x.ability ?? []).map ? (x.abilities ?? x.ability ?? []).map((ability: any) => typeof ability === 'string' ? ability : [ability.name, ability.text].filter(Boolean).join(' · ')) : [String(x.ability)];
-  const attacks = (x.attacks ?? []).map((attack: any) => typeof attack === 'string' ? attack : [attack.name, attack.damage, attack.text].filter(Boolean).join(' · '));
+  const abilities = (x.abilities ?? x.ability ?? []).map ? (x.abilities ?? x.ability ?? []).map((ability: any) => plainText(typeof ability === 'string' ? ability : [ability.name, ability.text].filter(Boolean).join(' · '))).filter(Boolean) : [plainText(x.ability)].filter(Boolean);
+  const attacks = (x.attacks ?? []).map((attack: any) => plainText(typeof attack === 'string' ? attack : [attack.name, attack.damage, attack.text].filter(Boolean).join(' · '))).filter(Boolean);
   const retreat = x.retreat_cost ?? x.retreatCost;
-  return { id: raw.id, name: x.name ?? x.clean_name, setName: x.set_name ?? set.name ?? 'Unknown set', setCode: x.set_code ?? set.ptcgoCode ?? set.id ?? '', number: x.card_number ?? x.number ?? '—', printedTotal: String(x.printed_total ?? x.set_total ?? set.printedTotal ?? set.total ?? ''), rarity: x.rarity ?? 'Unknown', type: x.card_type ?? x.types?.[0] ?? x.supertype ?? 'Pokémon', hp: x.hp, stage: x.stage ?? x.subtypes?.join(' · '), text: x.card_text ?? x.flavorText ?? x.rules?.join(' '), attacks, weakness: x.weakness ?? x.weaknesses?.map((item: any) => `${item.type} ${item.value}`).join(', '), evolvesFrom: x.evolves_from ?? x.evolvesFrom ?? x.evolution_from, resistance: x.resistance ?? x.resistances?.map((item: any) => `${item.type} ${item.value}`).join(', '), retreatCost: Array.isArray(retreat) ? retreat.join(', ') : retreat, illustrator: x.illustrator ?? x.artist, regulationMark: x.regulation_mark ?? x.regulationMark, abilities, imageUrl, prices: prices(raw), confidence: Math.max(.55, .96 - i * .08) };
+  return { id: raw.id, name: plainText(x.name ?? x.clean_name), setName: plainText(x.set_name ?? set.name ?? 'Unknown set'), setCode: plainText(x.set_code ?? set.ptcgoCode ?? set.id ?? ''), number: plainText(x.card_number ?? x.number ?? '—'), printedTotal: plainText(x.printed_total ?? x.set_total ?? set.printedTotal ?? set.total ?? ''), rarity: plainText(x.rarity ?? 'Unknown'), type: plainText(x.card_type ?? x.types?.[0] ?? x.supertype ?? 'Pokémon'), hp: plainText(x.hp), stage: plainText(x.stage ?? x.subtypes?.join(' · ')), text: plainText(x.card_text ?? x.flavorText ?? x.rules?.join(' ')), attacks, weakness: plainText(x.weakness ?? x.weaknesses?.map((item: any) => `${item.type} ${item.value}`).join(', ')), evolvesFrom: plainText(x.evolves_from ?? x.evolvesFrom ?? x.evolution_from), resistance: plainText(x.resistance ?? x.resistances?.map((item: any) => `${item.type} ${item.value}`).join(', ')), retreatCost: plainText(Array.isArray(retreat) ? retreat.join(', ') : retreat), illustrator: plainText(x.illustrator ?? x.artist), regulationMark: plainText(x.regulation_mark ?? x.regulationMark), abilities, imageUrl, prices: prices(raw), confidence: Math.max(.55, .96 - i * .08) };
 }
 export async function searchCards(query: string): Promise<Card[]> {
   assertConfigured();
