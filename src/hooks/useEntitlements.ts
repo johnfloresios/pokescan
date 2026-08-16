@@ -18,6 +18,7 @@ export const PRO_FEATURES={
   collectionExport:'collection_export',
   insuranceReports:'insurance_reports',
   dealerTools:'dealer_tools',
+  smartTradeBuilder:'smart_trade_builder',
 } as const;
 export type ProFeature=typeof PRO_FEATURES[keyof typeof PRO_FEATURES];
 export type PurchaseStatus='idle'|'purchasing'|'restoring'|'managing'|'success'|'cancelled'|'error';

@@ -14,6 +14,50 @@ export type ScanHints = {
 export type ScanText = { text: string; lines: string[]; query: string; queries: string[]; hints: ScanHints; cardDetected: boolean; ready: boolean };
 const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string; bottomText?: string; boxes?: TextBox[]; cardDetected?: boolean; cardBounds?: CardBounds }> }>('CardTextRecognizer');
 
+export function scanCompleteness(scan:ScanText){
+  let score=Math.min(30,scan.lines.length*2);
+  if(scan.hints.name)score+=55;
+  if(scan.hints.number)score+=90;
+  if(scan.hints.number?.includes('/'))score+=75;
+  if(scan.hints.collectorTotal)score+=35;
+  if(scan.hints.setCode)score+=65;
+  if(scan.hints.bottomIdentifier)score+=85;
+  if(scan.hints.hp)score+=12;
+  if(scan.hints.cardKind)score+=8;
+  if(scan.cardDetected)score+=25;
+  return score;
+}
+
+const cleanQueryPart=(value?:string)=>value?.replace(/\s+/g,' ').trim()||'';
+function queriesFromHints(hints:ScanHints){
+  const name=cleanQueryPart(hints.name),setCode=cleanQueryPart(hints.setCode),number=cleanQueryPart(hints.number);
+  return [...new Set([
+    hints.setId&&number?`${hints.setId} ${number.split('/')[0]}`:'',
+    setCode&&number?`${setCode} ${number}`:'',
+    name&&setCode?`${name} ${setCode}`:'',
+    name&&number?`${name} ${number}`:'',
+    name,
+  ].filter(Boolean))];
+}
+
+/** Selects the strongest still and fills only missing clues from other frames. */
+export function mergeFrameScans(scans:readonly ScanText[]):ScanText{
+  if(!scans.length)throw new Error('No scan frames were available.');
+  const ranked=[...scans].sort((a,b)=>scanCompleteness(b)-scanCompleteness(a));
+  const best=ranked[0];
+  const hints:{[K in keyof ScanHints]?:ScanHints[K]}={...best.hints};
+  const fields:(keyof ScanHints)[]=['name','number','collectorTotal','bottomIdentifier','setCode','setId','setName','rarity','hp','type','stage','cardKind','regulationMark'];
+  for(const field of fields){
+    if(hints[field])continue;
+    const candidate=ranked.find(scan=>scan.hints[field]);
+    if(candidate)(hints as Record<string,unknown>)[field]=candidate.hints[field];
+  }
+  hints.numericEvidence=[...new Set(ranked.flatMap(scan=>scan.hints.numericEvidence??[]))];
+  hints.evidence=ranked.map(scan=>scan.hints.evidence).filter(Boolean).join(' ');
+  const queries=queriesFromHints(hints as ScanHints);
+  return {...best,text:ranked.map(scan=>scan.text).join('\n'),lines:[...new Set(ranked.flatMap(scan=>scan.lines))],hints:hints as ScanHints,query:queries[0]??best.query,queries:[...new Set([...queries,...ranked.flatMap(scan=>scan.queries)])],cardDetected:ranked.some(scan=>scan.cardDetected),ready:Boolean(hints.name&&hints.number)};
+}
+
 const normalizeCardLine = (line: string) => {
   let value = line.replace(/\s+/g, ' ').trim();
 
@@ -206,9 +250,9 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
   const lines = text.split(/\r?\n/).map(normalizeCardLine).filter(Boolean);
   const search = buildSearch(lines, boxes, cardBounds, true, bottomText);
 
-  if (!text || !search.query) {
-    throw new Error('No card name or collector number was detected. Move closer, avoid glare, and try again.');
-  }
+  // Keep partial frames (for example, one with a sharp title but a washed-out
+  // bottom strip). The burst merger can combine their non-conflicting clues.
+  if (!text) throw new Error('No card text was detected. Move closer, avoid glare, and try again.');
   return {
     text,
     lines,
@@ -219,4 +263,19 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
     // permits cards whose foil, sleeve, or border hides one or more edges.
     ready: Boolean(search.hints.name && search.hints.number) && (cardDetected || lines.length >= 4),
   };
+}
+
+/** OCRs burst photos sequentially to keep peak memory low on older iPhones. */
+export async function recognizeBestCard(uris:readonly string[]):Promise<ScanText>{
+  const scans:ScanText[]=[];
+  let lastError:unknown;
+  for(const uri of uris){
+    try{scans.push(await recognizeCard(uri));}
+    catch(error){lastError=error;}
+  }
+  if(!scans.length)throw lastError instanceof Error?lastError:new Error('No readable card text was detected.');
+  const merged=mergeFrameScans(scans);
+  if(!merged.hints.name||!merged.hints.number)throw new Error('The card name and bottom collector number were not both clear. Adjust glare and try again.');
+  if(!merged.cardDetected&&scans.filter(scan=>scan.ready).length<2)throw new Error('The card edges were not clear enough. Keep the full card inside the guide and hold it straight.');
+  return merged;
 }

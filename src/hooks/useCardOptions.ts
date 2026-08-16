@@ -2,12 +2,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/services/supabase';
 
-export type CardOption={id:string;code:string;label:string;sort_order:number;is_active:boolean};
+export type CardOption={id:string;code:string;label:string;sort_order:number;is_active:boolean;value_multiplier?:number|null};
 type OptionKind='conditions'|'variants'|'rarities';
 type OptionBundle=Record<OptionKind,CardOption[]>;
 type HookResult={options:CardOption[];isLoading:boolean;error:string;refresh:()=>Promise<void>};
 
-const CACHE_KEY='pokescan.card-options.v1';
+const CACHE_KEY='pokescan.card-options.v2';
 let bundle:OptionBundle|null=null;
 let loadPromise:Promise<void>|null=null;
 let hasAttempted=false;
@@ -16,7 +16,7 @@ const notify=()=>listeners.forEach(listener=>listener());
 
 async function fetchOptions():Promise<OptionBundle>{
   const tables:OptionKind[]=['conditions','variants','rarities'];
-  const responses=await Promise.all(tables.map(table=>supabase.from(table).select('id,code,label,sort_order,is_active').eq('is_active',true).order('sort_order',{ascending:true})));
+  const responses=await Promise.all(tables.map(table=>supabase.from(table).select(table==='conditions'?'id,code,label,sort_order,is_active,value_multiplier':'id,code,label,sort_order,is_active').eq('is_active',true).order('sort_order',{ascending:true})));
   const failed=responses.find((response:{error:{message:string}|null})=>response.error);
   if(failed?.error)throw new Error(failed.error.message);
   return Object.fromEntries(tables.map((table,index)=>[table,(responses[index].data??[]) as CardOption[]])) as OptionBundle;

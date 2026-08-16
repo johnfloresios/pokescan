@@ -1,5 +1,5 @@
-import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Dimensions, FlatList, ImageBackground, Keyboard, KeyboardAvoidingView, PanResponder, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, type ScrollViewProps } from 'react-native';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, Dimensions, FlatList, ImageBackground, Keyboard, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, type ScrollViewProps } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
 import { Camera, type CameraRef, useCameraDevice, useCameraPermission, useFrameOutput, usePhotoOutput } from 'react-native-vision-camera';
 import { useTextRecognition } from 'react-native-vision-camera-ocr-plus';
@@ -11,13 +11,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Card } from '@/types';
 import { C, shadow } from '@/theme';
-import { analyzeLiveText, recognizeCard, ScanText } from '@/services/scanner';
+import { analyzeLiveText, recognizeBestCard, ScanText } from '@/services/scanner';
 import { cardImageSource, getCard, rankCards, scoreCardEvidence, searchCards } from '@/services/pokewallet';
 import { isSupabaseConfigured, supabase } from '@/services/supabase';
-import { useEntitlements } from '@/hooks/useEntitlements';
+import { PRO_FEATURES, useEntitlements } from '@/hooks/useEntitlements';
 import { useConditions, useRarities, useVariants } from '@/hooks/useCardOptions';
+import { FeatureGate } from '@/components/FeatureGate';
+import { adjustedCardValue, suggestBalanceCards, tradeTotal, type MultiplierMap, type TradeItem, type TradeSide } from '@/services/trade-builder';
 
-type Screen = 'home' | 'collection' | 'camera' | 'analyzing' | 'matches' | 'detail';
+type Screen = 'home' | 'collection' | 'trade' | 'camera' | 'analyzing' | 'matches' | 'detail';
 const money = (n: number | null) => n == null ? '—' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const KeyboardAwareScrollView=forwardRef<ScrollView,ScrollViewProps>(function KeyboardAwareScrollView({children,...props},ref){
@@ -60,12 +62,12 @@ export default function App() {
     setMatches(scan ? rankCards(cards, scan.hints) : cards); setScreen('matches');
   };
 
-  const lookup = async (q: string, uri?: string) => {
+  const lookup = async (q: string, uri?: string|string[]) => {
     try {
       setError('');
       if (uri) {
         setScreen('analyzing');
-        const scan=await recognizeCard(uri);
+        const scan=await recognizeBestCard(Array.isArray(uri)?uri:[uri]);
         await searchWithScan(scan.query,scan);return;
       }
       await searchWithScan(q.trim());
@@ -131,13 +133,14 @@ export default function App() {
   if (!isSupabaseConfigured) return <AuthPlaceholder configured={false} />;
   if (session === undefined) return <View style={[s.page,s.center]}><ActivityIndicator color={C.cyan} size="large"/><Text style={s.cameraHelp}>Loading your collection…</Text></View>;
   if (!session) return <AuthPlaceholder configured />;
-  if (screen === 'camera') return <CameraScreen onClose={() => setScreen('home')} onPhoto={(path:string)=>lookup('',`file://${path}`)} error={error} />;
+  if (screen === 'camera') return <CameraScreen onClose={() => setScreen('home')} onPhoto={(paths:string[])=>lookup('',paths.map(path=>`file://${path}`))} error={error} />;
   if (screen === 'analyzing') return <Analyzing />;
-  if (screen === 'collection') return <CollectionScreen userId={session.user.id} onBack={() => setScreen('home')} onScan={openCamera} onSelect={openSavedCard} />;
-  if (screen === 'matches') return <Matches query={query} cards={matches} onBack={() => setScreen('home')} onCollection={() => setScreen('collection')} onSelect={choose} onSearch={lookup} onScan={openCamera} />;
+  if (screen === 'collection') return <CollectionScreen userId={session.user.id} onBack={() => setScreen('home')} onScan={openCamera} onTrade={()=>setScreen('trade')} onSelect={openSavedCard} />;
+  if (screen === 'trade') return <TradeBuilderScreen userId={session.user.id} onHome={()=>setScreen('home')} onCollection={()=>setScreen('collection')} onScan={openCamera}/>;
+  if (screen === 'matches') return <Matches query={query} cards={matches} onBack={() => setScreen('home')} onCollection={() => setScreen('collection')} onSelect={choose} onSearch={lookup} onScan={openCamera} onTrade={()=>setScreen('trade')} />;
   if (screen === 'detail' && selected) return <Detail card={selected} savedRow={selectedSavedRow} onBack={() => setScreen(selectedIsSaved ? 'collection' : 'matches')} onHome={() => setScreen('home')} onCollection={() => setScreen('collection')} onSave={saveToCollection} onUpdateSaved={updateSavedCard} onDeleteSaved={deleteSelectedCard} onScan={openCamera} initiallySaved={selectedIsSaved} />;
   const displayName = [session.user.user_metadata?.nickname, session.user.user_metadata?.first_name, session.user.user_metadata?.full_name, session.user.user_metadata?.name, session.user.email?.split('@')[0]].find(value => typeof value === 'string' && value.trim())?.trim() ?? 'Collector';
-  return <Home userId={session.user.id} name={displayName} email={session.user.email ?? 'Collector'} onScan={openCamera} onCollection={() => setScreen('collection')} onSelectCard={openSavedCard} onSearch={lookup} onLogout={() => supabase.auth.signOut()} error={error} />;
+  return <Home userId={session.user.id} name={displayName} email={session.user.email ?? 'Collector'} onScan={openCamera} onCollection={() => setScreen('collection')} onTrade={()=>setScreen('trade')} onSelectCard={openSavedCard} onSearch={lookup} onLogout={() => supabase.auth.signOut()} error={error} />;
 }
 
 function Brand({ dark = false }: { dark?: boolean }) {
@@ -146,10 +149,10 @@ function Brand({ dark = false }: { dark?: boolean }) {
 function TierBadge() { const {isPro,isLoading}=useEntitlements();return <View style={s.tierBadge}><Feather name="shield" size={11} color={C.yellow}/><Text style={s.tierBadgeText}>{isLoading?'…':isPro?'PRO':'FREE'}</Text></View>; }
 function AppHeader({title,onBack,onClose,actions}:{title?:string;onBack?:()=>void;onClose?:()=>void;actions?:any}) { return <View style={s.top}><View><Brand/><Text style={s.headerPageTitle}>{title??"Know what you've pulled."}</Text></View><View style={s.topActions}>{onBack&&<Pressable onPress={onBack} style={s.headerAction}><Feather name="arrow-left" size={19} color={C.white}/></Pressable>}{onClose&&<Pressable onPress={onClose} style={s.headerAction}><Feather name="x" size={20} color={C.white}/></Pressable>}{actions??<TierBadge/>}</View></View>; }
 
-function BottomNav({active,onHome,onCollection,onScan}:{active:'home'|'collection'|'other';onHome:()=>void;onCollection:()=>void;onScan:()=>void}) {
+function BottomNav({active,onHome,onCollection,onScan,onTrade}:{active:'home'|'collection'|'trade'|'other';onHome:()=>void;onCollection:()=>void;onScan:()=>void;onTrade?:()=>void}) {
   const sell=()=>Alert.alert('Sell cards','The selling marketplace is coming soon.');
   const itemStyle=[s.navItem,{flex:1,width:undefined}];
-  return <View style={s.bottomNav}><Pressable onPress={onHome} style={itemStyle}><Feather name="home" size={20} color={active==='home'?C.yellow:C.muted}/><Text style={[s.navText,active==='home'&&{color:C.yellow}]}>Home</Text></Pressable><Pressable onPress={onCollection} style={itemStyle}><Feather name="layers" size={20} color={active==='collection'?C.yellow:C.muted}/><Text style={[s.navText,active==='collection'&&{color:C.yellow}]}>Collection</Text></Pressable><Pressable onPress={onScan} style={itemStyle}><MaterialCommunityIcons name="line-scan" size={20} color={C.muted}/><Text style={s.navText}>Scan</Text></Pressable><Pressable onPress={sell} style={itemStyle}><Feather name="tag" size={20} color={C.green}/><Text style={[s.navText,{color:C.green}]}>Sell</Text></Pressable></View>;
+  return <View style={s.bottomNav}><Pressable onPress={onHome} style={itemStyle}><Feather name="home" size={19} color={active==='home'?C.yellow:C.muted}/><Text style={[s.navText,active==='home'&&{color:C.yellow}]}>Home</Text></Pressable><Pressable onPress={onCollection} style={itemStyle}><Feather name="layers" size={19} color={active==='collection'?C.yellow:C.muted}/><Text style={[s.navText,active==='collection'&&{color:C.yellow}]}>Collection</Text></Pressable><Pressable onPress={onScan} style={itemStyle}><MaterialCommunityIcons name="line-scan" size={19} color={C.muted}/><Text style={s.navText}>Scan</Text></Pressable><Pressable onPress={onTrade??onHome} style={itemStyle}><MaterialCommunityIcons name="swap-horizontal-bold" size={20} color={active==='trade'?C.yellow:C.muted}/><Text style={[s.navText,active==='trade'&&{color:C.yellow}]}>Trade</Text></Pressable><Pressable onPress={sell} style={itemStyle}><Feather name="tag" size={19} color={C.green}/><Text style={[s.navText,{color:C.green}]}>Sell</Text></Pressable></View>;
 }
 
 type ScannedCardRow = { id:string;card_name:string;set_name:string;set_code:string|null;set_number:string;rarity:string|null;image_url:string|null;price_estimate:number|string|null;price_change_24h:number|string|null;quantity:number|null;condition:string|null;variant:string|null;notes:string|null;is_graded:boolean|null;created_at:string };
@@ -193,7 +196,7 @@ function AuthPlaceholder({ configured }: { configured: boolean }) {
     <Text style={s.authLabel}>EMAIL</Text><View style={s.authInputWrap}><Feather name="mail" size={18} color={C.muted}/><TextInput value={email} onChangeText={setEmail} placeholder="you@example.com" placeholderTextColor="#687B95" style={s.authInput} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} textContentType="emailAddress" selectionColor={C.cyan}/></View><Text style={s.authLabel}>PASSWORD</Text><View style={s.authInputWrap}><Feather name="lock" size={18} color={C.muted}/><TextInput value={password} onChangeText={setPassword} placeholder="At least 6 characters" placeholderTextColor="#687B95" style={s.authInput} secureTextEntry={!showPassword} autoCapitalize="none" autoCorrect={false} textContentType={mode==='signin'?'password':'newPassword'} selectionColor={C.cyan} onSubmitEditing={submit}/><Pressable onPress={()=>setShowPassword(value=>!value)} hitSlop={10}><Feather name={showPassword?'eye-off':'eye'} size={18} color={C.muted}/></Pressable></View>{mode==='signin'&&<Pressable onPress={resetPassword} disabled={loading} style={s.forgot}><Text style={s.forgotText}>Forgot password?</Text></Pressable>}{!!authError&&<View style={s.authNoticeError}><Feather name="alert-circle" size={15} color="#FF8B96"/><Text style={s.authErrorText}>{authError}</Text></View>}{!!message&&<View style={s.authNoticeSuccess}><Feather name="check-circle" size={15} color={C.green}/><Text style={s.authSuccessText}>{message}</Text></View>}<Pressable onPress={submit} disabled={loading} style={({pressed})=>[s.authSubmit,(pressed||loading)&&{opacity:.7}]}>{loading?<ActivityIndicator color={C.ink}/>:<><Text style={s.authSubmitText}>{mode==='signin'?'SIGN IN':'CREATE ACCOUNT'}</Text><Feather name="arrow-right" size={18} color={C.ink}/></>}</Pressable><View style={s.authSwitch}><Text style={s.authSwitchCopy}>{mode==='signin'?"Don't have an account?":'Already have an account?'}</Text><Pressable onPress={()=>{setMode(value=>value==='signin'?'signup':'signin');setAuthError('');setMessage('');}}><Text style={s.authSwitchAction}>{mode==='signin'?'Create one':'Sign in'}</Text></Pressable></View></View></ScrollView></SafeAreaView></KeyboardAvoidingView></View>;
 }
 
-function Home({ userId, name, email, onScan, onCollection, onSelectCard, onSearch, onLogout, error }: { userId:string;name:string;email:string;onScan:()=>void;onCollection:()=>void;onSelectCard:(row:ScannedCardRow)=>void;onSearch:(q:string)=>void;onLogout:()=>void;error:string }) {
+function Home({ userId, name, email, onScan, onCollection, onTrade, onSelectCard, onSearch, onLogout, error }: { userId:string;name:string;email:string;onScan:()=>void;onCollection:()=>void;onTrade:()=>void;onSelectCard:(row:ScannedCardRow)=>void;onSearch:(q:string)=>void;onLogout:()=>void;error:string }) {
   const scrollRef=useRef<ScrollView>(null);
   const [text, setText] = useState('');
   const [cards,setCards]=useState<ScannedCardRow[]>([]);
@@ -229,7 +232,7 @@ function Home({ userId, name, email, onScan, onCollection, onSelectCard, onSearc
         <View style={s.sectionRow}><Text style={s.dashboardSection}>RECENT SCANS</Text><Pressable onPress={onCollection} hitSlop={10}><Text style={s.seeAll}>View collection</Text></Pressable></View>
         {!loading&&!cards.length?<View style={s.recentEmpty}><MaterialCommunityIcons name="cards-outline" size={34} color={C.muted}/><Text style={s.emptyTitle}>No scans yet</Text><Text style={s.emptySub}>Scan your first card to start a collection.</Text></View>:cards.map(card=><Pressable key={card.id} onPress={()=>onSelectCard(card)} accessibilityRole="button" accessibilityLabel={`View ${card.card_name} details`} style={({pressed})=>[s.recentCard,pressed&&{opacity:.72}]}>{card.image_url?<Image source={{uri:card.image_url}} style={s.recentImage} contentFit="cover"/>:<View style={[s.recentImage,s.recentPlaceholder]}><MaterialCommunityIcons name="cards" size={22} color={C.muted}/></View>}<View style={s.recentInfo}><Text style={s.recentName} numberOfLines={1}>{card.card_name}</Text><Text style={s.recentSet} numberOfLines={1}>{card.set_name} · {card.set_number}</Text></View><Text style={s.recentPrice}>{money(Number(card.price_estimate)||0)}</Text><Feather name="chevron-right" size={17} color={C.muted}/></Pressable>)}
       </ScrollView>
-      <BottomNav active="home" onHome={()=>{}} onCollection={onCollection} onScan={onScan}/>
+      <BottomNav active="home" onHome={()=>{}} onCollection={onCollection} onScan={onScan} onTrade={onTrade}/>
     </SafeAreaView>
     </KeyboardAvoidingView>
   </View>;
@@ -288,7 +291,7 @@ function SwipeToDelete({children,onDelete}:{children:any;onDelete:()=>void}) {
   return <View style={s.swipeWrap}><Pressable onPress={onDelete} style={s.swipeDelete}><Feather name="trash-2" size={20} color={C.white}/><Text style={s.swipeDeleteText}>Delete</Text></Pressable><Animated.View {...responder.panHandlers} style={{transform:[{translateX:x}]}}>{children}</Animated.View></View>;
 }
 
-function CollectionScreen({userId,onBack,onScan,onSelect}:{userId:string;onBack:()=>void;onScan:()=>void;onSelect:(row:ScannedCardRow)=>void}) {
+function CollectionScreen({userId,onBack,onScan,onTrade,onSelect}:{userId:string;onBack:()=>void;onScan:()=>void;onTrade:()=>void;onSelect:(row:ScannedCardRow)=>void}) {
   const {options:rarityOptions,isLoading:raritiesLoading}=useRarities();
   const [cards,setCards]=useState<ScannedCardRow[]>([]);
   const [loading,setLoading]=useState(true);
@@ -350,7 +353,77 @@ function CollectionScreen({userId,onBack,onScan,onSelect}:{userId:string;onBack:
 
   return <View style={s.page}><SafeAreaView style={s.safe}><AppHeader title="Collection" onBack={onBack}/>
     <FlatList data={cards} renderItem={renderCard} keyExtractor={card=>card.id} ListHeaderComponent={header} ListEmptyComponent={loading?<CollectionSkeleton/>:<View style={s.collectionEmpty}><View style={s.emptyOrb}><MaterialCommunityIcons name="cards-outline" size={42} color={C.cyan}/></View><Text style={s.emptyTitle}>{filtered?'No cards match':'Build your collection'}</Text><Text style={s.emptySub}>{filtered?'Try clearing your search or choosing another filter.':'Scan your first Pokémon card to track its value and market movement.'}</Text>{!filtered&&<Pressable onPress={onScan} style={s.emptyScan}><MaterialCommunityIcons name="line-scan" size={16} color={C.ink}/><Text style={s.emptyScanText}>SCAN YOUR FIRST CARD</Text></Pressable>}</View>} ListFooterComponent={loadingMore?<ActivityIndicator style={{marginVertical:20}} color={C.cyan}/>:null} contentContainerStyle={s.collectionList} showsVerticalScrollIndicator={false} automaticallyAdjustKeyboardInsets keyboardDismissMode={Platform.OS==='ios'?'interactive':'on-drag'} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading&&cards.length>0} onRefresh={()=>load(true)} tintColor={C.cyan}/>} onEndReached={()=>{if(hasMore&&!loadingMore&&!loading)void load(false);}} onEndReachedThreshold={.35} initialNumToRender={8} maxToRenderPerBatch={10} windowSize={7}/>
-    <BottomNav active="collection" onHome={onBack} onCollection={()=>{}} onScan={onScan}/></SafeAreaView></View>;
+    <BottomNav active="collection" onHome={onBack} onCollection={()=>{}} onScan={onScan} onTrade={onTrade}/></SafeAreaView></View>;
+}
+
+function LockedTradeBuilder(){
+  const {isLoading,purchaseStatus,presentPaywall}=useEntitlements();
+  if(isLoading)return <View style={s.tradeLocked}><ActivityIndicator color={C.cyan} size="large"/><Text style={s.emptySub}>Checking NicePull Pro…</Text></View>;
+  const busy=purchaseStatus==='purchasing';
+  return <View style={s.tradeLocked}><View style={s.tradeLockIcon}><Feather name="lock" size={30} color={C.yellow}/></View><Text style={s.tradeLockedTitle}>Build smarter trades</Text><Text style={s.tradeLockedCopy}>Compare both sides, adjust for condition, and find cards that close the value gap with NicePull Pro.</Text><Pressable disabled={busy} onPress={()=>void presentPaywall()} style={({pressed})=>[s.tradeUpgrade,(pressed||busy)&&{opacity:.65}]}>{busy?<ActivityIndicator color={C.ink}/>:<><Feather name="star" size={17} color={C.ink}/><Text style={s.tradeUpgradeText}>VIEW PRO OPTIONS</Text></>}</Pressable></View>;
+}
+
+function TradeBuilderScreen({userId,onHome,onCollection,onScan}:{userId:string;onHome:()=>void;onCollection:()=>void;onScan:()=>void}){
+  const {options:conditions,isLoading:conditionsLoading,error:conditionsError}=useConditions();
+  const [collection,setCollection]=useState<ScannedCardRow[]>([]);
+  const [giving,setGiving]=useState<TradeItem[]>([]);
+  const [receiving,setReceiving]=useState<TradeItem[]>([]);
+  const [loading,setLoading]=useState(true);
+  const [loadError,setLoadError]=useState('');
+  const [pickerSide,setPickerSide]=useState<TradeSide|null>(null);
+  const [pickerSearch,setPickerSearch]=useState('');
+  const [showSuggestions,setShowSuggestions]=useState(false);
+
+  const loadCollection=useCallback(async()=>{
+    setLoading(true);setLoadError('');
+    const {data,error}=await supabase.from('scanned_cards').select('id,card_name,set_name,set_code,set_number,rarity,image_url,price_estimate,quantity,condition').eq('user_id',userId).order('card_name',{ascending:true});
+    if(error)setLoadError(error.message);else setCollection((data??[]) as ScannedCardRow[]);
+    setLoading(false);
+  },[userId]);
+  useEffect(()=>{void loadCollection();},[loadCollection]);
+
+  const multipliers=useMemo<MultiplierMap>(()=>Object.fromEntries(conditions.map(option=>[option.code,Number(option.value_multiplier)||1])),[conditions]);
+  const givingTotal=useMemo(()=>tradeTotal(giving,multipliers),[giving,multipliers]);
+  const receivingTotal=useMemo(()=>tradeTotal(receiving,multipliers),[receiving,multipliers]);
+  const difference=receivingTotal-givingTotal;
+  const lighterSide:TradeSide=difference>=0?'giving':'receiving';
+  const targetAmount=Math.abs(difference);
+  const usedCounts=useMemo(()=>[...giving,...receiving].reduce<Record<string,number>>((counts,item)=>({...counts,[item.card.id]:(counts[item.card.id]??0)+1}),{}),[giving,receiving]);
+  const suggestions=useMemo(()=>suggestBalanceCards(collection,targetAmount,usedCounts,multipliers),[collection,multipliers,targetAmount,usedCounts]);
+
+  const addCard=(card:ScannedCardRow,side:TradeSide,conditionOverride?:string)=>{
+    const knownCondition=conditions.some(option=>option.code===card.condition)?card.condition:null;
+    const condition=conditionOverride||knownCondition||conditions[0]?.code||'';
+    const item:TradeItem={instanceId:`${card.id}-${Date.now()}-${Math.random()}`,card,condition};
+    side==='giving'?setGiving(current=>[...current,item]):setReceiving(current=>[...current,item]);
+    setPickerSide(null);setPickerSearch('');setShowSuggestions(false);void Haptics.selectionAsync();
+  };
+  const removeItem=(side:TradeSide,instanceId:string)=>side==='giving'?setGiving(current=>current.filter(item=>item.instanceId!==instanceId)):setReceiving(current=>current.filter(item=>item.instanceId!==instanceId));
+  const changeCondition=(side:TradeSide,instanceId:string,condition:string)=>{
+    const update=(items:TradeItem[])=>items.map(item=>item.instanceId===instanceId?{...item,condition}:item);
+    side==='giving'?setGiving(update):setReceiving(update);
+  };
+  const filteredCollection=collection.filter(card=>`${card.card_name} ${card.set_name} ${card.set_code??''} ${card.set_number}`.toLowerCase().includes(pickerSearch.trim().toLowerCase()));
+  const status=!giving.length&&!receiving.length?'Add cards to compare both sides':Math.abs(difference)<.01?'This trade is perfectly balanced':difference>0?`You are up ${money(difference)}`:`You need ${money(Math.abs(difference))} more`;
+
+  const sideSection=(side:TradeSide,title:string,subtitle:string,items:TradeItem[],total:number)=><View style={s.tradeSide}><View style={s.tradeSideHeader}><View><Text style={s.tradeSideTitle}>{title}</Text><Text style={s.tradeSideSubtitle}>{subtitle}</Text></View><Text style={s.tradeSideTotal}>{money(total)}</Text></View>{!items.length?<View style={s.tradeSideEmpty}><MaterialCommunityIcons name="cards-outline" size={25} color={C.muted}/><Text style={s.tradeSideEmptyText}>No cards added</Text></View>:items.map(item=><View key={item.instanceId} style={s.tradeItem}>{item.card.image_url?<Image source={{uri:item.card.image_url}} style={s.tradeItemImage} contentFit="cover"/>:<View style={[s.tradeItemImage,s.recentPlaceholder]}><MaterialCommunityIcons name="cards" size={18} color={C.muted}/></View>}<View style={s.tradeItemBody}><View style={s.tradeItemTop}><View style={{flex:1}}><Text style={s.tradeItemName} numberOfLines={1}>{item.card.card_name}</Text><Text style={s.tradeItemSet} numberOfLines={1}>{item.card.set_code?`${item.card.set_code} `:''}{item.card.set_number}</Text></View><View style={{alignItems:'flex-end'}}><Text style={s.tradeItemValue}>{money(adjustedCardValue(item.card,item.condition,multipliers))}</Text><Text style={s.tradeItemBase}>{money(Number(item.card.price_estimate)||0)} market</Text></View><Pressable onPress={()=>removeItem(side,item.instanceId)} hitSlop={9} style={s.tradeRemove}><Feather name="x" size={15} color={C.red}/></Pressable></View><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.tradeConditions}>{conditions.map(option=><Pressable key={option.id} onPress={()=>changeCondition(side,item.instanceId,option.code)} style={[s.tradeCondition,item.condition===option.code&&s.tradeConditionActive]}><Text style={[s.tradeConditionText,item.condition===option.code&&s.tradeConditionTextActive]}>{option.code}</Text></Pressable>)}</ScrollView></View></View>)}<Pressable onPress={()=>setPickerSide(side)} style={s.tradeAdd}><Feather name="plus" size={16} color={C.cyan}/><Text style={s.tradeAddText}>ADD CARD</Text></Pressable></View>;
+
+  return <View style={s.page}><SafeAreaView style={s.safe}><AppHeader title="Smart Trade Builder"/>
+    <FeatureGate feature={PRO_FEATURES.smartTradeBuilder} fallback={<LockedTradeBuilder/>}>
+      <ScrollView contentContainerStyle={s.tradeScroll} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={loading} onRefresh={loadCollection} tintColor={C.cyan}/>}>
+        <View style={s.tradeIntro}><View style={s.tradeProPill}><Feather name="star" size={10} color={C.yellow}/><Text style={s.tradeProText}>PRO</Text></View><Text style={s.tradeTitle}>Make every trade count.</Text><Text style={s.tradeCopy}>Values update instantly as you change card condition.</Text></View>
+        {!!loadError&&<Text style={s.error}>{loadError}</Text>}{!!conditionsError&&<Text style={s.error}>{conditionsError}</Text>}{conditionsLoading&&<ActivityIndicator color={C.cyan}/>}
+        {sideSection('giving','SIDE A','YOU GIVE',giving,givingTotal)}
+        <View style={[s.tradeVerdict,Math.abs(difference)<.01&&giving.length&&receiving.length?s.tradeVerdictEven:difference>=0?s.tradeVerdictPositive:s.tradeVerdictNegative]}><View style={s.tradeVerdictIcon}><MaterialCommunityIcons name="scale-balance" size={22} color={Math.abs(difference)<.01?C.cyan:difference>=0?C.green:C.red}/></View><View style={{flex:1}}><Text style={s.tradeVerdictLabel}>TRADE DIFFERENCE</Text><Text style={s.tradeVerdictText}>{status}</Text></View>{(giving.length||receiving.length)?<Text style={s.tradeDifference}>{money(targetAmount)}</Text>:null}</View>
+        {sideSection('receiving','SIDE B','YOU RECEIVE',receiving,receivingTotal)}
+        <Pressable disabled={!targetAmount||loading||!collection.length} onPress={()=>setShowSuggestions(value=>!value)} style={({pressed})=>[s.suggestButton,(pressed||!targetAmount||loading||!collection.length)&&{opacity:.55}]}><MaterialCommunityIcons name="auto-fix" size={19} color={C.ink}/><Text style={s.suggestButtonText}>SUGGEST CARDS TO BALANCE</Text></Pressable>
+        {showSuggestions&&<View style={s.suggestionPanel}><Text style={s.suggestionTitle}>ADD TO {lighterSide==='giving'?'SIDE A':'SIDE B'}</Text><Text style={s.suggestionCopy}>Closest matches from your available collection copies.</Text>{suggestions.length?suggestions.map(suggestion=><Pressable key={suggestion.card.id} onPress={()=>addCard(suggestion.card as ScannedCardRow,lighterSide,suggestion.condition)} style={s.suggestionRow}>{suggestion.card.image_url?<Image source={{uri:suggestion.card.image_url}} style={s.suggestionImage} contentFit="cover"/>:<View style={[s.suggestionImage,s.recentPlaceholder]}/>}<View style={{flex:1}}><Text style={s.suggestionName} numberOfLines={1}>{suggestion.card.card_name}</Text><Text style={s.suggestionMeta}>{suggestion.condition} · leaves {money(suggestion.remainingDifference)}</Text></View><Text style={s.suggestionValue}>{money(suggestion.adjustedValue)}</Text><Feather name="plus-circle" size={18} color={C.cyan}/></Pressable>):<Text style={s.optionEmpty}>No unused priced cards can close this gap.</Text>}</View>}
+        <Text style={s.tradeDisclaimer}>Market values are estimates. Confirm card authenticity, variant, and physical condition before trading.</Text>
+      </ScrollView>
+    </FeatureGate>
+    <BottomNav active="trade" onHome={onHome} onCollection={onCollection} onScan={onScan} onTrade={()=>{}}/>
+    <Modal visible={pickerSide!==null} animationType="slide" transparent onRequestClose={()=>setPickerSide(null)}><View style={s.tradeModalShade}><View style={s.tradePicker}><View style={s.sheetHandle}/><View style={s.tradePickerHeader}><View><Text style={s.tradePickerTitle}>Add to {pickerSide==='giving'?'Side A':'Side B'}</Text><Text style={s.tradePickerCopy}>Choose from your collection</Text></View><Pressable onPress={()=>setPickerSide(null)} style={s.modalClose}><Feather name="x" size={20} color={C.white}/></Pressable></View><View style={s.tradeSearch}><Feather name="search" size={17} color={C.muted}/><TextInput value={pickerSearch} onChangeText={setPickerSearch} placeholder="Search cards" placeholderTextColor="#71839C" style={s.tradeSearchInput} autoFocus selectionColor={C.cyan}/></View><FlatList data={filteredCollection} keyExtractor={card=>card.id} keyboardShouldPersistTaps="handled" contentContainerStyle={s.tradePickerList} ListEmptyComponent={<Text style={s.optionEmpty}>{loading?'Loading collection…':'No matching cards.'}</Text>} renderItem={({item})=><Pressable onPress={()=>pickerSide&&addCard(item,pickerSide)} style={s.tradePickerRow}>{item.image_url?<Image source={{uri:item.image_url}} style={s.tradePickerImage} contentFit="cover"/>:<View style={[s.tradePickerImage,s.recentPlaceholder]}/>}<View style={{flex:1}}><Text style={s.tradePickerName}>{item.card_name}</Text><Text style={s.tradePickerMeta}>{item.set_code?`${item.set_code} `:''}{item.set_number} · Qty {Math.max(1,Number(item.quantity)||1)}</Text></View><Text style={s.tradePickerPrice}>{money(Number(item.price_estimate)||0)}</Text><Feather name="plus" size={18} color={C.cyan}/></Pressable>}/></View></View></Modal>
+  </SafeAreaView></View>;
 }
 
 function ScannerBeam() {
@@ -372,9 +445,12 @@ function CameraScreen({ onClose, onPhoto, error }: any) {
   const { scanText } = useTextRecognition({ language: 'latin', frameSkipThreshold: 5 });
   const [ready, setReady] = useState(false);
   const [active, setActive] = useState(true);
+  const [canCapture,setCanCapture]=useState(false);
   const [status, setStatus] = useState('Looking for name + card number…');
   const lastSignature = useRef('');
   const stableFrames = useRef(0);
+  const incompleteFrames = useRef(0);
+  const positionReady = useRef(false);
   const locked = useRef(false);
 
   useEffect(() => {
@@ -382,39 +458,75 @@ function CameraScreen({ onClose, onPhoto, error }: any) {
     photoOutput.prepareSettings([{ flashMode: 'off', enableShutterSound: true }]).catch(() => undefined);
   }, [photoOutput, ready]);
 
-  const finishScan = useCallback(async (scan: ScanText) => {
+  const captureBurst=useCallback(async()=>{
+    const paths:string[]=[];
+    // Three full-resolution stills provide useful variation in focus and foil
+    // glare without the latency and memory pressure of a five-image burst.
+    for(let index=0;index<3;index++){
+      setStatus(`Capturing detail ${index+1} of 3…`);
+      const {filePath}=await photoOutput.capturePhotoToFile({flashMode:'off',enableShutterSound:index===0},{});
+      paths.push(filePath);
+      if(index<2)await new Promise(resolve=>setTimeout(resolve,110));
+    }
+    return paths;
+  },[photoOutput]);
+
+  const finishScan = useCallback(async (_scan: ScanText) => {
     if (locked.current) return;
     locked.current = true;
-    setStatus('Card detected · reading bottom details…');
     try {
-      setStatus('Capturing card…');
-      const {filePath}=await photoOutput.capturePhotoToFile({flashMode:'off',enableShutterSound:true},{});
+      const paths=await captureBurst();
       setActive(false);
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      await onPhoto(filePath);
+      await onPhoto(paths);
     } catch (e) {
       locked.current = false;
       setActive(true);
       stableFrames.current = 0;
+      positionReady.current=false;setCanCapture(false);
       setStatus(e instanceof Error ? e.message : 'Hold steady and try again');
     }
-  }, [onPhoto, photoOutput]);
+  }, [captureBurst,onPhoto]);
 
   const handleText = useCallback((recognizedText: string) => {
     if (locked.current) return;
     const scan = analyzeLiveText(recognizedText);
-    if (!scan.cardDetected || !scan.hints.name) {
+    const lineCount=scan.lines.length;
+    if(lineCount<3){
       stableFrames.current = 0;
       lastSignature.current = '';
-      setStatus('Reading character name…');
+      incompleteFrames.current++;
+      positionReady.current=false;setCanCapture(false);
+      setStatus('Move closer · fit the full card in the frame');
       return;
     }
-    const signature = scan.hints.name.toLowerCase();
+    if(lineCount>20&&!scan.hints.number){
+      stableFrames.current=0;incompleteFrames.current++;
+      positionReady.current=false;setCanCapture(false);
+      setStatus('Move farther away · keep every edge visible');
+      return;
+    }
+    if (!scan.cardDetected || !scan.hints.name) {
+      stableFrames.current = 0;
+      incompleteFrames.current++;
+      positionReady.current=false;setCanCapture(false);
+      setStatus(incompleteFrames.current>4?'Straighten card and reduce glare':'Center the card inside the guide');
+      return;
+    }
+    const signature = `${scan.hints.name.toLowerCase()}|${scan.hints.number??''}`;
     stableFrames.current = signature === lastSignature.current ? stableFrames.current + 1 : 1;
     lastSignature.current = signature;
-    const requiredFrames = scan.hints.number ? 2 : 3;
-    setStatus(stableFrames.current >= requiredFrames ? 'Card stable · capturing details…' : `Found ${scan.hints.name} · hold steady…`);
-    if (stableFrames.current >= requiredFrames) void finishScan(scan);
+    if(!scan.hints.number){
+      incompleteFrames.current++;
+      positionReady.current=false;setCanCapture(false);
+      setStatus(incompleteFrames.current>4?'Reduce glare · tilt the card slightly':`Found ${scan.hints.name} · expose the bottom edge`);
+      return;
+    }
+    incompleteFrames.current=0;
+    positionReady.current=stableFrames.current>=2;setCanCapture(positionReady.current);
+    const requiredFrames=3;
+    setStatus(stableFrames.current>=requiredFrames?'Hold steady · capturing best detail…':`Found ${scan.hints.name} ${scan.hints.number} · hold steady`);
+    if(stableFrames.current>=requiredFrames)void finishScan(scan);
   }, [finishScan]);
 
   const frameOutput = useFrameOutput({
@@ -443,16 +555,17 @@ function CameraScreen({ onClose, onPhoto, error }: any) {
 
   const manualCapture = async () => {
     if (locked.current || !ready) return;
+    if(!positionReady.current){Alert.alert('Card is not ready',status);return;}
     locked.current = true;
-    setStatus('Capturing photo…');
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      const { filePath } = await photoOutput.capturePhotoToFile({ flashMode: 'off', enableShutterSound: true }, {});
+      const paths=await captureBurst();
       setActive(false);
-      await onPhoto(filePath);
+      await onPhoto(paths);
     } catch (e) {
       locked.current = false;
       setActive(true);
+      positionReady.current=false;setCanCapture(false);
       const message = e instanceof Error ? e.message : 'Could not capture photo';
       setStatus(message);
       Alert.alert('Could not capture card', message);
@@ -463,8 +576,8 @@ function CameraScreen({ onClose, onPhoto, error }: any) {
   return <View style={s.cameraPage}><Camera ref={camera} style={StyleSheet.absoluteFill} device={device} isActive={active} outputs={[frameOutput, photoOutput]} zoom={device.neutralZoom} resizeMode="cover" onStarted={cameraReady} onPreviewStarted={cameraReady} onError={(cameraError: any) => { setReady(false); setStatus(cameraError.message); }} />
     <LinearGradient pointerEvents="none" colors={['rgba(3,8,16,.78)', 'transparent', 'transparent', 'rgba(3,8,16,.9)']} locations={[0,.25,.7,1]} style={StyleSheet.absoluteFill} />
     <SafeAreaView style={s.cameraSafe}><AppHeader title="Scan your card" onClose={onClose}/>
-      <View style={s.frameWrap}><View style={s.frame}><Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" /><ScannerBeam /></View><View style={s.hold}><MaterialCommunityIcons name="cards-outline" size={18} color={C.cyan} /><Text style={s.holdText}>FIT FULL CARD · KEEP 12–18 IN AWAY</Text></View></View>
-      <View><Text style={s.cameraHelp}>{error ? 'Scanner unavailable' : ready ? status : 'Starting camera…'}</Text>{!!error && <Text style={s.cameraError}>{error}</Text>}<View style={s.shutterRow}><View style={{width:48}} /><Pressable disabled={!ready || locked.current} hitSlop={14} onPress={manualCapture} style={({pressed}) => [s.shutterOuter, (!ready || locked.current) && {opacity:.45}, pressed && {transform:[{scale:.94}]}]}><View style={s.shutterInner} /></Pressable><View style={s.autoBadge}><MaterialCommunityIcons name="line-scan" size={16} color={C.cyan}/><Text style={s.autoBadgeText}>LIVE</Text></View></View></View>
+      <View style={s.frameWrap}><View style={[s.frame,canCapture&&s.frameReady]}><View style={s.bottomStripGuide}><Text style={s.bottomStripText}>SET + NUMBER</Text></View><Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" /><ScannerBeam /></View><View style={s.hold}><MaterialCommunityIcons name={canCapture?'check-circle':'cards-outline'} size={18} color={canCapture?C.green:C.cyan} /><Text style={s.holdText}>FIT FULL CARD · KEEP 12–18 IN AWAY</Text></View></View>
+      <View><Text style={[s.cameraHelp,canCapture&&{color:C.green}]}>{error ? 'Scanner unavailable' : ready ? status : 'Starting camera…'}</Text>{!!error && <Text style={s.cameraError}>{error}</Text>}<View style={s.shutterRow}><View style={{width:48}} /><Pressable disabled={!ready || locked.current || !canCapture} hitSlop={14} onPress={manualCapture} style={({pressed}) => [s.shutterOuter,canCapture&&s.shutterReady, (!ready || locked.current || !canCapture) && {opacity:.38}, pressed && {transform:[{scale:.94}]}]}><View style={s.shutterInner} /></Pressable><View style={s.autoBadge}><MaterialCommunityIcons name="line-scan" size={16} color={C.cyan}/><Text style={s.autoBadgeText}>BURST</Text></View></View></View>
     </SafeAreaView>
   </View>;
 }
@@ -473,13 +586,13 @@ function Corner({ pos }: {pos:string}) { return <View style={[s.corner, pos.incl
 function Analyzing() { return <View style={s.page}><LinearGradient colors={[C.ink,'#251044','#11102D']} style={StyleSheet.absoluteFill}/><SafeAreaView style={s.safe}><AppHeader/><View style={s.centerContent}><View style={s.analyzeIcon}><MaterialCommunityIcons name="line-scan" size={56} color={C.cyan} /></View><ActivityIndicator color={C.cyan} size="large" style={{marginTop:28}}/><Text style={s.analyzeTitle}>Retrieving card details…</Text><Text style={s.analyzeSub}>Scoring its number, set, name, and printed details</Text></View></SafeAreaView></View>; }
 
 
-function Matches({ query, cards, onBack, onCollection, onSelect, onSearch, onScan }: {query:string;cards:Card[];onBack:()=>void;onCollection:()=>void;onSelect:(c:Card)=>void;onSearch:(q:string)=>void;onScan:()=>void}) {
+function Matches({ query, cards, onBack, onCollection, onSelect, onSearch, onScan, onTrade }: {query:string;cards:Card[];onBack:()=>void;onCollection:()=>void;onSelect:(c:Card)=>void;onSearch:(q:string)=>void;onScan:()=>void;onTrade:()=>void}) {
   return <View style={s.page}><SafeAreaView style={s.safe}><AppHeader title="Choose your match" onBack={onBack}/>
     <ScrollView contentContainerStyle={s.resultsScroll} showsVerticalScrollIndicator={false}><View style={s.detected}><View style={s.detectedIcon}><Feather name="check" size={18} color={C.green}/></View><View style={{flex:1}}><Text style={s.detectedLabel}>MATCHES READY</Text><Text style={s.detectedText}>Select the exact card printing</Text></View></View>
       <Text style={s.found}><Text style={{color:C.white}}>{cards.length} possible matches</Text> · Select the exact card</Text>
       {cards.map((card,i)=><Match key={card.id} card={card} best={i===0} onPress={()=>onSelect(card)}/>)}
       {!cards.length && <View style={s.empty}><MaterialCommunityIcons name="cards-outline" size={42} color={C.muted}/><Text style={s.emptyTitle}>No matches yet</Text><Text style={s.emptySub}>Try a clearer scan or search by card name.</Text></View>}
-    </ScrollView><BottomNav active="other" onHome={onBack} onCollection={onCollection} onScan={onScan}/></SafeAreaView></View>;
+    </ScrollView><BottomNav active="other" onHome={onBack} onCollection={onCollection} onScan={onScan} onTrade={onTrade}/></SafeAreaView></View>;
 }
 function Match({card,best,onPress}:{card:Card;best:boolean;onPress:()=>void}) { const p=card.prices[0]; return <Pressable onPress={onPress} style={({pressed})=>[s.match, best&&s.bestMatch,pressed&&{opacity:.8}]}>{best&&<View style={s.bestTag}><Ionicons name="sparkles" size={12} color={C.ink}/><Text style={s.bestText}>BEST MATCH</Text></View>}<Image source={cardImageSource(card)} style={s.matchImg} contentFit="contain" transition={250}/><View style={s.matchInfo}><Text style={s.matchName} numberOfLines={1}>{card.name}</Text><Text style={s.matchSet} numberOfLines={1}>{card.setName} · {card.setCode} {card.number}</Text><View style={s.pills}><Text style={s.pill}>{card.number}</Text><Text style={s.pill}>{card.rarity}</Text></View><View style={s.matchBottom}><View><Text style={s.marketLabel}>MARKET VALUE</Text><Text style={s.matchPrice}>{money(p?.market)}</Text></View><View style={s.confidence}><Text style={s.confText}>{Math.round((card.confidence??.7)*100)}% match</Text></View></View></View><Feather name="chevron-right" size={21} color={C.muted}/></Pressable>; }
 
@@ -525,8 +638,9 @@ const s=StyleSheet.create({
   tierBadge:{height:28,borderRadius:9,borderWidth:1,borderColor:'rgba(255,213,61,.3)',backgroundColor:'rgba(255,213,61,.1)',paddingHorizontal:9,flexDirection:'row',alignItems:'center',gap:5},tierBadgeText:{fontFamily:'Inter_800ExtraBold',fontSize:8,color:C.yellow,letterSpacing:1},swipeWrap:{position:'relative',overflow:'hidden',borderRadius:18,marginBottom:10},swipeDelete:{position:'absolute',top:0,right:0,bottom:0,width:104,backgroundColor:'#D93448',alignItems:'center',justifyContent:'center',gap:5},swipeDeleteText:{fontFamily:'Inter_700Bold',fontSize:10,color:C.white},swipeHint:{flexDirection:'row',alignItems:'center',gap:1,marginTop:1},swipeHintText:{fontFamily:'Inter_700Bold',fontSize:6.5,color:C.muted,letterSpacing:.5},savedControls:{marginTop:25,borderRadius:20,borderWidth:1,borderColor:'rgba(69,212,131,.25)',backgroundColor:C.panel,padding:17},savedControlsTitle:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},savedHeading:{fontFamily:'Inter_800ExtraBold',fontSize:20,color:C.white,marginTop:3},savedMessage:{fontFamily:'Inter_600SemiBold',fontSize:10,color:C.green,marginTop:12},
   compactEditLabel:{fontFamily:'Inter_700Bold',fontSize:8,color:C.muted,letterSpacing:1.1,marginTop:14,marginBottom:7},variantLabelRow:{flexDirection:'row',alignItems:'flex-end',justifyContent:'space-between'},moreVariants:{minHeight:32,flexDirection:'row',alignItems:'center',gap:3,paddingHorizontal:7,marginBottom:1,borderRadius:9},moreVariantsSelected:{backgroundColor:'rgba(68,215,255,.1)',borderWidth:1,borderColor:'rgba(68,215,255,.25)'},moreVariantsText:{fontFamily:'Inter_700Bold',fontSize:9,color:C.cyan},secondaryVariants:{marginTop:7},optionEmpty:{fontFamily:'Inter_500Medium',fontSize:9,color:C.muted,marginTop:6},collectionNotesInput:{height:112,borderRadius:13,borderWidth:1,borderColor:C.line,backgroundColor:C.panel,color:C.white,fontFamily:'Inter_500Medium',fontSize:12,lineHeight:18,paddingHorizontal:12,paddingTop:11,paddingBottom:11},
   detailActionBar:{flexDirection:'row',gap:10,backgroundColor:'#0B1321',borderTopWidth:1,borderColor:C.line,paddingHorizontal:16,paddingTop:10,paddingBottom:10},detailActionBarWithNav:{marginBottom:76},detailDeleteAction:{height:54,minWidth:104,borderRadius:15,borderWidth:1,borderColor:'rgba(244,63,80,.35)',backgroundColor:'rgba(244,63,80,.1)',flexDirection:'row',alignItems:'center',justifyContent:'center',gap:7},detailSaveAction:{height:54,flex:1,borderRadius:15,backgroundColor:'#A855F7',alignItems:'center',justifyContent:'center'},
-  cameraPage:{flex:1,backgroundColor:'#000'},cameraSafe:{flex:1,justifyContent:'space-between',padding:18},cameraTop:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},glassButton:{width:44,height:44,borderRadius:22,backgroundColor:'rgba(8,17,31,.55)',borderWidth:1,borderColor:'rgba(255,255,255,.18)',alignItems:'center',justifyContent:'center'},cameraTitle:{fontFamily:'Inter_700Bold',fontSize:17,color:C.white},frameWrap:{alignItems:'center'},frame:{width:SCAN_WIDTH,aspectRatio:63/88,position:'relative',overflow:'hidden'},corner:{position:'absolute',width:42,height:42,borderColor:C.yellow,borderRadius:10,zIndex:2},scanLine:{position:'absolute',left:12,right:12,top:0,height:3,backgroundColor:C.cyan,shadowColor:C.cyan,shadowOpacity:1,shadowRadius:12,elevation:5},hold:{flexDirection:'row',gap:8,alignItems:'center',backgroundColor:'rgba(8,17,31,.7)',paddingVertical:9,paddingHorizontal:14,borderRadius:20,marginTop:18},holdText:{fontFamily:'Inter_700Bold',fontSize:9,color:C.white,letterSpacing:1.1},cameraHelp:{fontFamily:'Inter_500Medium',fontSize:13,color:C.white,textAlign:'center',marginBottom:12},cameraError:{color:'#FFD1D5',textAlign:'center',fontFamily:'Inter_500Medium',fontSize:11,marginBottom:8},shutterRow:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingHorizontal:28,paddingBottom:12},shutterOuter:{width:78,height:78,borderRadius:39,borderWidth:4,borderColor:C.white,alignItems:'center',justifyContent:'center'},shutterInner:{width:62,height:62,borderRadius:31,backgroundColor:C.yellow},autoBadge:{width:48,height:48,borderRadius:24,backgroundColor:'rgba(8,17,31,.72)',borderWidth:1,borderColor:'rgba(34,211,238,.35)',alignItems:'center',justifyContent:'center'},autoBadgeText:{fontFamily:'Inter_700Bold',fontSize:7,color:C.cyan,letterSpacing:.8,marginTop:1},analyzeIcon:{width:116,height:116,borderRadius:38,backgroundColor:C.panel,borderWidth:1,borderColor:C.line,alignItems:'center',justifyContent:'center'},analyzeTitle:{fontFamily:'Inter_700Bold',fontSize:23,color:C.white,marginTop:20},analyzeSub:{fontFamily:'Inter_400Regular',fontSize:13,color:C.muted,textAlign:'center',marginTop:8},
+  cameraPage:{flex:1,backgroundColor:'#000'},cameraSafe:{flex:1,justifyContent:'space-between',padding:18},cameraTop:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},glassButton:{width:44,height:44,borderRadius:22,backgroundColor:'rgba(8,17,31,.55)',borderWidth:1,borderColor:'rgba(255,255,255,.18)',alignItems:'center',justifyContent:'center'},cameraTitle:{fontFamily:'Inter_700Bold',fontSize:17,color:C.white},frameWrap:{alignItems:'center'},frame:{width:SCAN_WIDTH,aspectRatio:63/88,position:'relative',overflow:'hidden',borderRadius:13,borderWidth:1,borderColor:'rgba(255,255,255,.24)',backgroundColor:'rgba(255,255,255,.025)'},frameReady:{borderColor:C.green,shadowColor:C.green,shadowOpacity:.65,shadowRadius:12},bottomStripGuide:{position:'absolute',left:7,right:7,bottom:7,height:'21%',borderRadius:8,borderWidth:1,borderStyle:'dashed',borderColor:'rgba(34,211,238,.7)',backgroundColor:'rgba(34,211,238,.055)',justifyContent:'flex-end',alignItems:'flex-end',padding:5},bottomStripText:{fontFamily:'Inter_700Bold',fontSize:6,color:C.cyan,letterSpacing:.9},corner:{position:'absolute',width:42,height:42,borderColor:C.yellow,borderRadius:10,zIndex:2},scanLine:{position:'absolute',left:12,right:12,top:0,height:3,backgroundColor:C.cyan,shadowColor:C.cyan,shadowOpacity:1,shadowRadius:12,elevation:5},hold:{flexDirection:'row',gap:8,alignItems:'center',backgroundColor:'rgba(8,17,31,.7)',paddingVertical:9,paddingHorizontal:14,borderRadius:20,marginTop:18},holdText:{fontFamily:'Inter_700Bold',fontSize:9,color:C.white,letterSpacing:1.1},cameraHelp:{fontFamily:'Inter_500Medium',fontSize:13,color:C.white,textAlign:'center',marginBottom:12},cameraError:{color:'#FFD1D5',textAlign:'center',fontFamily:'Inter_500Medium',fontSize:11,marginBottom:8},shutterRow:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingHorizontal:28,paddingBottom:12},shutterOuter:{width:78,height:78,borderRadius:39,borderWidth:4,borderColor:C.white,alignItems:'center',justifyContent:'center'},shutterReady:{borderColor:C.green},shutterInner:{width:62,height:62,borderRadius:31,backgroundColor:C.yellow},autoBadge:{width:48,height:48,borderRadius:24,backgroundColor:'rgba(8,17,31,.72)',borderWidth:1,borderColor:'rgba(34,211,238,.35)',alignItems:'center',justifyContent:'center'},autoBadgeText:{fontFamily:'Inter_700Bold',fontSize:7,color:C.cyan,letterSpacing:.8,marginTop:1},analyzeIcon:{width:116,height:116,borderRadius:38,backgroundColor:C.panel,borderWidth:1,borderColor:C.line,alignItems:'center',justifyContent:'center'},analyzeTitle:{fontFamily:'Inter_700Bold',fontSize:23,color:C.white,marginTop:20},analyzeSub:{fontFamily:'Inter_400Regular',fontSize:13,color:C.muted,textAlign:'center',marginTop:8},
   resultTop:{paddingHorizontal:20,paddingVertical:16,flexDirection:'row',alignItems:'center',gap:16,borderBottomWidth:1,borderColor:C.line},back:{width:42,height:42,borderRadius:15,backgroundColor:C.panel2,alignItems:'center',justifyContent:'center'},smallHead:{fontFamily:'Inter_700Bold',fontSize:8,color:C.green,letterSpacing:1.3},resultTitle:{fontFamily:'Inter_700Bold',fontSize:20,color:C.white,marginTop:2},resultsScroll:{padding:20,paddingBottom:50},detected:{backgroundColor:C.panel,padding:15,borderRadius:17,borderWidth:1,borderColor:C.line,flexDirection:'row',alignItems:'center',gap:12},detectedIcon:{width:34,height:34,borderRadius:12,backgroundColor:'rgba(69,212,131,.1)',alignItems:'center',justifyContent:'center'},detectedLabel:{fontFamily:'Inter_700Bold',fontSize:8,color:C.muted,letterSpacing:1.2},detectedText:{fontFamily:'Inter_600SemiBold',fontSize:14,color:C.white,marginTop:3},found:{fontFamily:'Inter_400Regular',fontSize:11,color:C.muted,marginVertical:18},match:{minHeight:174,borderRadius:20,backgroundColor:C.panel,marginBottom:14,padding:13,flexDirection:'row',alignItems:'center',gap:13,borderWidth:1,borderColor:C.line,overflow:'hidden'},bestMatch:{borderColor:'#416DB4',backgroundColor:'#12233A'},bestTag:{position:'absolute',top:0,right:0,backgroundColor:C.yellow,paddingVertical:5,paddingHorizontal:9,borderBottomLeftRadius:10,flexDirection:'row',gap:4,alignItems:'center'},bestText:{fontFamily:'Inter_800ExtraBold',fontSize:7,color:C.ink,letterSpacing:.7},matchImg:{width:93,height:130,borderRadius:7,backgroundColor:C.panel2},matchInfo:{flex:1},matchName:{fontFamily:'Inter_700Bold',fontSize:17,color:C.white},matchSet:{fontFamily:'Inter_400Regular',fontSize:10.5,color:C.muted,marginTop:4},pills:{flexDirection:'row',gap:5,marginTop:10},pill:{fontFamily:'Inter_600SemiBold',fontSize:8,color:'#AFC0D7',paddingVertical:4,paddingHorizontal:7,backgroundColor:C.panel2,borderRadius:6,overflow:'hidden'},matchBottom:{flexDirection:'row',alignItems:'flex-end',justifyContent:'space-between',marginTop:12},marketLabel:{fontFamily:'Inter_700Bold',fontSize:7,color:C.muted,letterSpacing:.8},matchPrice:{fontFamily:'Inter_700Bold',fontSize:20,color:C.yellow,marginTop:1},confidence:{backgroundColor:'rgba(69,212,131,.1)',borderRadius:8,padding:5},confText:{fontFamily:'Inter_600SemiBold',fontSize:8,color:C.green},empty:{alignItems:'center',padding:50},emptyTitle:{fontFamily:'Inter_700Bold',fontSize:18,color:C.white,marginTop:12},emptySub:{fontFamily:'Inter_400Regular',fontSize:12,color:C.muted,marginTop:5},
   authNameRow:{flexDirection:'row',gap:10},authNameField:{flex:1},optional:{color:C.cyan},saveError:{fontFamily:'Inter_500Medium',fontSize:11,color:'#FF9EA8',textAlign:'center',marginTop:20},collectionSaved:{backgroundColor:C.green},
-  detailHero:{paddingHorizontal:18,paddingBottom:26},detailTop:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingTop:8},detailNav:{fontFamily:'Inter_700Bold',fontSize:16,color:C.white},cardGlow:{position:'absolute',width:DETAIL_CARD_WIDTH,height:DETAIL_CARD_WIDTH,borderRadius:DETAIL_CARD_WIDTH/2,backgroundColor:'rgba(68,215,255,.14)',alignSelf:'center',top:125},heroCard:{width:DETAIL_CARD_WIDTH,height:DETAIL_CARD_HEIGHT,alignSelf:'center',marginTop:18,marginBottom:8},detailBody:{padding:22,paddingBottom:110,backgroundColor:C.ink,borderTopLeftRadius:28,borderTopRightRadius:28},matchedIdentifier:{fontFamily:'Inter_700Bold',fontSize:9,color:C.green,letterSpacing:1,marginBottom:10},detailHeading:{flexDirection:'row',alignItems:'center'},detailName:{fontFamily:'Inter_800ExtraBold',fontSize:29,color:C.white,letterSpacing:-.8},detailSet:{fontFamily:'Inter_400Regular',fontSize:12,color:C.muted,marginTop:6},typeBadge:{flexDirection:'row',alignItems:'center',gap:5,backgroundColor:C.yellow,paddingVertical:8,paddingHorizontal:11,borderRadius:12},typeText:{fontFamily:'Inter_700Bold',fontSize:9,color:C.ink},priceCard:{marginTop:24,borderRadius:20,backgroundColor:C.panel,padding:19,borderWidth:1,borderColor:C.line,flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'},valueLabel:{fontFamily:'Inter_700Bold',fontSize:8,color:C.muted,letterSpacing:1.1},bigPrice:{fontFamily:'Inter_800ExtraBold',fontSize:36,color:C.white,letterSpacing:-1,marginTop:3},updated:{fontFamily:'Inter_400Regular',fontSize:9,color:C.muted,marginTop:3},priceActions:{alignItems:'flex-end',gap:10},gain:{flexDirection:'row',gap:5,alignItems:'center',backgroundColor:'rgba(69,212,131,.1)',paddingVertical:6,paddingHorizontal:9,borderRadius:10},gainText:{fontFamily:'Inter_700Bold',fontSize:10,color:C.green},sellButton:{flexDirection:'row',alignItems:'center',gap:6,backgroundColor:C.green,paddingVertical:9,paddingHorizontal:15,borderRadius:11},sellButtonText:{fontFamily:'Inter_700Bold',fontSize:11,color:C.ink},range:{flexDirection:'row',backgroundColor:'#0C1727',borderRadius:15,marginTop:10,paddingVertical:13,alignItems:'center'},rangeItem:{flex:1,alignItems:'center'},rangeLabel:{fontFamily:'Inter_500Medium',fontSize:9,color:C.muted},rangeValue:{fontFamily:'Inter_700Bold',fontSize:14,color:C.white,marginTop:3},rangeLine:{width:1,height:28,backgroundColor:C.line},sectionTitle:{fontFamily:'Inter_700Bold',fontSize:9,color:C.muted,letterSpacing:1.3,marginTop:27,marginBottom:11},infoGrid:{flexDirection:'row',flexWrap:'wrap',gap:9},info:{width:'48.5%',backgroundColor:C.panel,padding:14,borderRadius:14,borderWidth:1,borderColor:C.line},infoLabel:{fontFamily:'Inter_700Bold',fontSize:8,color:C.muted,letterSpacing:.8},infoValue:{fontFamily:'Inter_600SemiBold',fontSize:13,color:C.white,marginTop:5},detailsBox:{backgroundColor:C.panel,borderRadius:16,borderWidth:1,borderColor:C.line,padding:15},ability:{marginBottom:14,paddingBottom:13,borderBottomWidth:1,borderColor:C.line},abilityBadge:{alignSelf:'flex-start',backgroundColor:'rgba(244,63,140,.15)',paddingVertical:4,paddingHorizontal:7,borderRadius:6,marginBottom:7},abilityBadgeText:{fontFamily:'Inter_800ExtraBold',fontSize:7,color:C.red,letterSpacing:.8},abilityText:{fontFamily:'Inter_600SemiBold',fontSize:11,color:C.white,lineHeight:17},attack:{flexDirection:'row',alignItems:'center',gap:9,marginBottom:10},energyDot:{width:18,height:18,borderRadius:9,backgroundColor:C.yellow,borderWidth:4,borderColor:'#7C6515'},attackText:{fontFamily:'Inter_600SemiBold',fontSize:12,color:C.white},cardText:{fontFamily:'Inter_400Regular',fontSize:11,color:C.muted,lineHeight:17,marginTop:4},combatRow:{marginTop:12,paddingTop:12,borderTopWidth:1,borderColor:C.line},weakness:{fontFamily:'Inter_500Medium',fontSize:10,color:'#C9D5E4',marginBottom:6},collection:{height:56,borderRadius:16,backgroundColor:C.yellow,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:9,marginTop:26},collectionText:{fontFamily:'Inter_700Bold',fontSize:14,color:C.ink},disclaimer:{fontFamily:'Inter_400Regular',fontSize:9,color:C.muted,textAlign:'center',lineHeight:14,marginTop:14}
+  detailHero:{paddingHorizontal:18,paddingBottom:26},detailTop:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingTop:8},detailNav:{fontFamily:'Inter_700Bold',fontSize:16,color:C.white},cardGlow:{position:'absolute',width:DETAIL_CARD_WIDTH,height:DETAIL_CARD_WIDTH,borderRadius:DETAIL_CARD_WIDTH/2,backgroundColor:'rgba(68,215,255,.14)',alignSelf:'center',top:125},heroCard:{width:DETAIL_CARD_WIDTH,height:DETAIL_CARD_HEIGHT,alignSelf:'center',marginTop:18,marginBottom:8},detailBody:{padding:22,paddingBottom:110,backgroundColor:C.ink,borderTopLeftRadius:28,borderTopRightRadius:28},matchedIdentifier:{fontFamily:'Inter_700Bold',fontSize:9,color:C.green,letterSpacing:1,marginBottom:10},detailHeading:{flexDirection:'row',alignItems:'center'},detailName:{fontFamily:'Inter_800ExtraBold',fontSize:29,color:C.white,letterSpacing:-.8},detailSet:{fontFamily:'Inter_400Regular',fontSize:12,color:C.muted,marginTop:6},typeBadge:{flexDirection:'row',alignItems:'center',gap:5,backgroundColor:C.yellow,paddingVertical:8,paddingHorizontal:11,borderRadius:12},typeText:{fontFamily:'Inter_700Bold',fontSize:9,color:C.ink},priceCard:{marginTop:24,borderRadius:20,backgroundColor:C.panel,padding:19,borderWidth:1,borderColor:C.line,flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'},valueLabel:{fontFamily:'Inter_700Bold',fontSize:8,color:C.muted,letterSpacing:1.1},bigPrice:{fontFamily:'Inter_800ExtraBold',fontSize:36,color:C.white,letterSpacing:-1,marginTop:3},updated:{fontFamily:'Inter_400Regular',fontSize:9,color:C.muted,marginTop:3},priceActions:{alignItems:'flex-end',gap:10},gain:{flexDirection:'row',gap:5,alignItems:'center',backgroundColor:'rgba(69,212,131,.1)',paddingVertical:6,paddingHorizontal:9,borderRadius:10},gainText:{fontFamily:'Inter_700Bold',fontSize:10,color:C.green},sellButton:{flexDirection:'row',alignItems:'center',gap:6,backgroundColor:C.green,paddingVertical:9,paddingHorizontal:15,borderRadius:11},sellButtonText:{fontFamily:'Inter_700Bold',fontSize:11,color:C.ink},range:{flexDirection:'row',backgroundColor:'#0C1727',borderRadius:15,marginTop:10,paddingVertical:13,alignItems:'center'},rangeItem:{flex:1,alignItems:'center'},rangeLabel:{fontFamily:'Inter_500Medium',fontSize:9,color:C.muted},rangeValue:{fontFamily:'Inter_700Bold',fontSize:14,color:C.white,marginTop:3},rangeLine:{width:1,height:28,backgroundColor:C.line},sectionTitle:{fontFamily:'Inter_700Bold',fontSize:9,color:C.muted,letterSpacing:1.3,marginTop:27,marginBottom:11},infoGrid:{flexDirection:'row',flexWrap:'wrap',gap:9},info:{width:'48.5%',backgroundColor:C.panel,padding:14,borderRadius:14,borderWidth:1,borderColor:C.line},infoLabel:{fontFamily:'Inter_700Bold',fontSize:8,color:C.muted,letterSpacing:.8},infoValue:{fontFamily:'Inter_600SemiBold',fontSize:13,color:C.white,marginTop:5},detailsBox:{backgroundColor:C.panel,borderRadius:16,borderWidth:1,borderColor:C.line,padding:15},ability:{marginBottom:14,paddingBottom:13,borderBottomWidth:1,borderColor:C.line},abilityBadge:{alignSelf:'flex-start',backgroundColor:'rgba(244,63,140,.15)',paddingVertical:4,paddingHorizontal:7,borderRadius:6,marginBottom:7},abilityBadgeText:{fontFamily:'Inter_800ExtraBold',fontSize:7,color:C.red,letterSpacing:.8},abilityText:{fontFamily:'Inter_600SemiBold',fontSize:11,color:C.white,lineHeight:17},attack:{flexDirection:'row',alignItems:'center',gap:9,marginBottom:10},energyDot:{width:18,height:18,borderRadius:9,backgroundColor:C.yellow,borderWidth:4,borderColor:'#7C6515'},attackText:{fontFamily:'Inter_600SemiBold',fontSize:12,color:C.white},cardText:{fontFamily:'Inter_400Regular',fontSize:11,color:C.muted,lineHeight:17,marginTop:4},combatRow:{marginTop:12,paddingTop:12,borderTopWidth:1,borderColor:C.line},weakness:{fontFamily:'Inter_500Medium',fontSize:10,color:'#C9D5E4',marginBottom:6},collection:{height:56,borderRadius:16,backgroundColor:C.yellow,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:9,marginTop:26},collectionText:{fontFamily:'Inter_700Bold',fontSize:14,color:C.ink},disclaimer:{fontFamily:'Inter_400Regular',fontSize:9,color:C.muted,textAlign:'center',lineHeight:14,marginTop:14},
+  tradeScroll:{paddingHorizontal:16,paddingBottom:120},tradeIntro:{paddingVertical:15},tradeProPill:{alignSelf:'flex-start',flexDirection:'row',alignItems:'center',gap:5,borderRadius:8,backgroundColor:'rgba(168,85,247,.14)',borderWidth:1,borderColor:'rgba(168,85,247,.3)',paddingHorizontal:8,paddingVertical:5},tradeProText:{fontFamily:'Inter_800ExtraBold',fontSize:8,color:C.yellow,letterSpacing:1},tradeTitle:{fontFamily:'Inter_800ExtraBold',fontSize:28,color:C.white,letterSpacing:-.7,marginTop:10},tradeCopy:{fontFamily:'Inter_400Regular',fontSize:11,color:C.muted,marginTop:5},tradeSide:{borderRadius:20,backgroundColor:C.panel,borderWidth:1,borderColor:C.line,padding:13,marginTop:10},tradeSideHeader:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingBottom:11},tradeSideTitle:{fontFamily:'Inter_800ExtraBold',fontSize:16,color:C.white},tradeSideSubtitle:{fontFamily:'Inter_700Bold',fontSize:7,color:C.cyan,letterSpacing:1.1,marginTop:2},tradeSideTotal:{fontFamily:'Inter_800ExtraBold',fontSize:22,color:C.yellow},tradeSideEmpty:{height:76,borderRadius:14,borderWidth:1,borderStyle:'dashed',borderColor:C.line,alignItems:'center',justifyContent:'center',gap:5},tradeSideEmptyText:{fontFamily:'Inter_500Medium',fontSize:10,color:C.muted},tradeItem:{flexDirection:'row',gap:10,borderTopWidth:1,borderColor:C.line,paddingVertical:11},tradeItemImage:{width:48,height:67,borderRadius:6,backgroundColor:C.panel2},tradeItemBody:{flex:1,minWidth:0},tradeItemTop:{flexDirection:'row',alignItems:'flex-start',gap:7},tradeItemName:{fontFamily:'Inter_700Bold',fontSize:13,color:C.white},tradeItemSet:{fontFamily:'Inter_500Medium',fontSize:9,color:C.muted,marginTop:3},tradeItemValue:{fontFamily:'Inter_800ExtraBold',fontSize:13,color:C.green},tradeItemBase:{fontFamily:'Inter_400Regular',fontSize:7,color:C.muted,marginTop:2},tradeRemove:{width:25,height:25,borderRadius:8,backgroundColor:'rgba(244,63,140,.1)',alignItems:'center',justifyContent:'center'},tradeConditions:{gap:5,paddingTop:10,paddingRight:5},tradeCondition:{minWidth:35,height:27,borderRadius:8,borderWidth:1,borderColor:C.line,alignItems:'center',justifyContent:'center',paddingHorizontal:8},tradeConditionActive:{backgroundColor:'rgba(34,211,238,.12)',borderColor:C.cyan},tradeConditionText:{fontFamily:'Inter_700Bold',fontSize:8,color:C.muted},tradeConditionTextActive:{color:C.cyan},tradeAdd:{height:43,borderRadius:12,borderWidth:1,borderColor:'rgba(34,211,238,.28)',backgroundColor:'rgba(34,211,238,.06)',flexDirection:'row',alignItems:'center',justifyContent:'center',gap:7,marginTop:8},tradeAddText:{fontFamily:'Inter_800ExtraBold',fontSize:9,color:C.cyan,letterSpacing:.8},tradeVerdict:{minHeight:78,borderRadius:18,borderWidth:1,borderColor:C.line,backgroundColor:'#10192A',marginTop:12,padding:13,flexDirection:'row',alignItems:'center',gap:11},tradeVerdictPositive:{borderColor:'rgba(52,211,153,.3)'},tradeVerdictNegative:{borderColor:'rgba(244,63,140,.3)'},tradeVerdictEven:{borderColor:'rgba(34,211,238,.35)'},tradeVerdictIcon:{width:42,height:42,borderRadius:13,backgroundColor:C.panel2,alignItems:'center',justifyContent:'center'},tradeVerdictLabel:{fontFamily:'Inter_700Bold',fontSize:7,color:C.muted,letterSpacing:1},tradeVerdictText:{fontFamily:'Inter_700Bold',fontSize:13,color:C.white,marginTop:4},tradeDifference:{fontFamily:'Inter_800ExtraBold',fontSize:17,color:C.white},suggestButton:{height:54,borderRadius:15,backgroundColor:C.yellow,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:8,marginTop:14},suggestButtonText:{fontFamily:'Inter_800ExtraBold',fontSize:10,color:C.ink,letterSpacing:.6},suggestionPanel:{borderRadius:18,backgroundColor:C.panel,borderWidth:1,borderColor:C.line,padding:13,marginTop:10},suggestionTitle:{fontFamily:'Inter_800ExtraBold',fontSize:9,color:C.cyan,letterSpacing:1},suggestionCopy:{fontFamily:'Inter_400Regular',fontSize:9,color:C.muted,marginTop:3,marginBottom:7},suggestionRow:{minHeight:64,borderTopWidth:1,borderColor:C.line,flexDirection:'row',alignItems:'center',gap:9,paddingVertical:8},suggestionImage:{width:35,height:49,borderRadius:4,backgroundColor:C.panel2},suggestionName:{fontFamily:'Inter_700Bold',fontSize:11,color:C.white},suggestionMeta:{fontFamily:'Inter_400Regular',fontSize:8,color:C.muted,marginTop:3},suggestionValue:{fontFamily:'Inter_700Bold',fontSize:12,color:C.green},tradeDisclaimer:{fontFamily:'Inter_400Regular',fontSize:8.5,lineHeight:13,color:C.muted,textAlign:'center',margin:17},tradeLocked:{flex:1,alignItems:'center',justifyContent:'center',paddingHorizontal:35,paddingBottom:80},tradeLockIcon:{width:72,height:72,borderRadius:24,backgroundColor:'rgba(168,85,247,.13)',borderWidth:1,borderColor:'rgba(168,85,247,.28)',alignItems:'center',justifyContent:'center'},tradeLockedTitle:{fontFamily:'Inter_800ExtraBold',fontSize:25,color:C.white,marginTop:19},tradeLockedCopy:{fontFamily:'Inter_400Regular',fontSize:12,lineHeight:19,color:C.muted,textAlign:'center',marginTop:8},tradeUpgrade:{height:53,borderRadius:15,backgroundColor:C.yellow,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:8,alignSelf:'stretch',marginTop:21},tradeUpgradeText:{fontFamily:'Inter_800ExtraBold',fontSize:10,color:C.ink,letterSpacing:.7},tradeModalShade:{flex:1,backgroundColor:'rgba(0,0,0,.72)',justifyContent:'flex-end'},tradePicker:{height:'78%',backgroundColor:'#100C1A',borderTopLeftRadius:27,borderTopRightRadius:27,borderWidth:1,borderColor:C.line,paddingTop:13},tradePickerHeader:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingHorizontal:18},tradePickerTitle:{fontFamily:'Inter_800ExtraBold',fontSize:21,color:C.white},tradePickerCopy:{fontFamily:'Inter_400Regular',fontSize:9,color:C.muted,marginTop:3},tradeSearch:{height:49,borderRadius:14,backgroundColor:C.panel,borderWidth:1,borderColor:C.line,flexDirection:'row',alignItems:'center',gap:9,paddingHorizontal:13,margin:16},tradeSearchInput:{flex:1,height:'100%',fontFamily:'Inter_600SemiBold',fontSize:12,color:C.white},tradePickerList:{paddingHorizontal:16,paddingBottom:30},tradePickerRow:{minHeight:80,borderBottomWidth:1,borderColor:C.line,flexDirection:'row',alignItems:'center',gap:10,paddingVertical:8},tradePickerImage:{width:43,height:60,borderRadius:5,backgroundColor:C.panel2},tradePickerName:{fontFamily:'Inter_700Bold',fontSize:13,color:C.white},tradePickerMeta:{fontFamily:'Inter_400Regular',fontSize:8.5,color:C.muted,marginTop:4},tradePickerPrice:{fontFamily:'Inter_800ExtraBold',fontSize:13,color:C.yellow}
 });

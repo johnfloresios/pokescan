@@ -2,13 +2,18 @@ import ExpoModulesCore
 import Vision
 import UIKit
 import ImageIO
+import CoreImage
 
 public class CardTextRecognizerModule: Module {
   public func definition() -> ModuleDefinition {
     Name("CardTextRecognizer")
     AsyncFunction("recognize") { (path: String, promise: Promise) in
-      guard let image = UIImage(contentsOfFile: path), let cgImage = image.cgImage else {
+      guard let sourceImage = UIImage(contentsOfFile: path) else {
         promise.reject("IMAGE_ERROR", "The captured image could not be read."); return
+      }
+      let image = sourceImage.normalizedForOCR
+      guard let cgImage = image.cgImage else {
+        promise.reject("IMAGE_ERROR", "The captured image could not be normalized."); return
       }
       var detectedCardRect: CGRect?
       let request = VNRecognizeTextRequest()
@@ -34,10 +39,20 @@ public class CardTextRecognizerModule: Module {
         rectangleRequest.quadratureTolerance = 22
         do {
           try handler.perform([rectangleRequest])
+          var ocrImage = cgImage
+          var ocrOrientation = orientation
           if let rectangles = rectangleRequest.results, let card = rectangles.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height }) {
             detectedCardRect = card.boundingBox
+            // Flatten the photographed quadrilateral before OCR. This removes
+            // perspective skew and crops away sleeves/background distractions.
+            if let corrected = perspectiveCorrect(cgImage: cgImage, rectangle: card) {
+              ocrImage = corrected
+              ocrOrientation = .up
+              detectedCardRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+            }
           }
-          try handler.perform([request])
+          let ocrHandler = VNImageRequestHandler(cgImage: ocrImage, orientation: ocrOrientation)
+          try ocrHandler.perform([request])
           let observations = request.results ?? []
         let boxes: [[String: Any]] = observations.compactMap { observation in
           guard let text = observation.topCandidates(1).first?.string else { return nil }
@@ -63,10 +78,10 @@ public class CardTextRecognizerModule: Module {
             titleRequest.customWords = request.customWords
             titleRequest.minimumTextHeight = 0.004
             titleRequest.regionOfInterest = titleRegion
-            try handler.perform([titleRequest])
+            try ocrHandler.perform([titleRequest])
             titleLines = (titleRequest.results ?? []).compactMap { $0.topCandidates(1).first?.string }
 
-            let bottomLeft = CGRect(x: card.minX, y: card.minY, width: card.width, height: card.height * 0.20)
+            let bottomLeft = CGRect(x: card.minX, y: card.minY, width: card.width, height: card.height * 0.25)
             let bottomRequest = VNRecognizeTextRequest()
             bottomRequest.recognitionLevel = .accurate
             bottomRequest.usesLanguageCorrection = false
@@ -74,8 +89,21 @@ public class CardTextRecognizerModule: Module {
             bottomRequest.customWords = ["SV2a", "SWSH", "SVI", "PAL", "OBF", "PAR", "TEF", "TWM", "SCR", "SSP", "PRE", "JTG", "DRI"]
             bottomRequest.minimumTextHeight = 0.003
             bottomRequest.regionOfInterest = bottomLeft
-            try handler.perform([bottomRequest])
+            try ocrHandler.perform([bottomRequest])
             bottomLines = (bottomRequest.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+
+            // A tighter second pass increases the apparent size of the tiny
+            // collector number and set code printed in the lower-left strip.
+            let collectorRegion = CGRect(x: card.minX, y: card.minY, width: card.width * 0.82, height: card.height * 0.16)
+            let collectorRequest = VNRecognizeTextRequest()
+            collectorRequest.recognitionLevel = .accurate
+            collectorRequest.usesLanguageCorrection = false
+            collectorRequest.recognitionLanguages = ["en-US"]
+            collectorRequest.customWords = bottomRequest.customWords
+            collectorRequest.minimumTextHeight = 0.002
+            collectorRequest.regionOfInterest = collectorRegion
+            try ocrHandler.perform([collectorRequest])
+            bottomLines += (collectorRequest.results ?? []).compactMap { $0.topCandidates(1).first?.string }
           }
         var payload: [String: Any] = [
           "text": (titleLines + lines + bottomLines).joined(separator: "\n"),
@@ -94,7 +122,32 @@ public class CardTextRecognizerModule: Module {
   }
 }
 
+private func perspectiveCorrect(cgImage: CGImage, rectangle: VNRectangleObservation) -> CGImage? {
+  let input = CIImage(cgImage: cgImage)
+  let extent = input.extent
+  let point: (CGPoint) -> CIVector = { normalized in
+    CIVector(x: extent.minX + normalized.x * extent.width, y: extent.minY + normalized.y * extent.height)
+  }
+  guard let filter = CIFilter(name: "CIPerspectiveCorrection") else { return nil }
+  filter.setValue(input, forKey: kCIInputImageKey)
+  filter.setValue(point(rectangle.topLeft), forKey: "inputTopLeft")
+  filter.setValue(point(rectangle.topRight), forKey: "inputTopRight")
+  filter.setValue(point(rectangle.bottomLeft), forKey: "inputBottomLeft")
+  filter.setValue(point(rectangle.bottomRight), forKey: "inputBottomRight")
+  guard let output = filter.outputImage else { return nil }
+  return CIContext(options: [.cacheIntermediates: false]).createCGImage(output, from: output.extent)
+}
+
 private extension UIImage {
+  var normalizedForOCR: UIImage {
+    if imageOrientation == .up { return self }
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = scale
+    return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+      draw(in: CGRect(origin: .zero, size: size))
+    }
+  }
+
   var cgImageOrientation: CGImagePropertyOrientation {
     switch imageOrientation {
     case .up: return .up
