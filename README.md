@@ -2,6 +2,81 @@
 
 **Know what you've pulled.**
 
+## RevenueCat NicePull Pro setup
+
+RevenueCat controls purchasing, restoration, the hosted paywall, and Customer
+Center. Supabase stores a convenient mirror of the active entitlement; the app
+only unlocks Pro after RevenueCat returns an active entitlement.
+
+### RevenueCat dashboard
+
+1. Create an entitlement whose **identifier** is exactly `NicePull Pro`.
+   Identifiers are case-sensitive. If you choose another identifier, set
+   `EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID` to the exact value.
+2. Create/import these products and attach all of them to that entitlement:
+
+   | Product ID | Store type | RevenueCat package |
+   | --- | --- | --- |
+   | `lifetime` | Non-consumable / one-time | Lifetime |
+   | `yearly` | Auto-renewing subscription | Annual |
+   | `monthly` | Auto-renewing subscription | Monthly |
+
+3. Put the products in one Offering and mark it **Current**.
+4. Build and publish a Paywall for the current Offering. The app opens this
+   remotely managed paywall, so pricing and presentation do not need app code.
+5. Configure Customer Center if the RevenueCat project is on a plan that supports
+   it. NicePull shows it to active Pro users for subscription management.
+
+The App Store and Play Console—not application code—set prices. Configure the
+Lifetime product at $9.99 there, and choose the desired Monthly/Yearly prices.
+
+### Local Test Store
+
+The provided `test_...` key is a **RevenueCat Test Store public SDK key**, not a
+production key. It simulates success, cancellation, and errors without StoreKit
+or Google Play. Local `.env` uses it only when both conditions are true:
+
+```dotenv
+EXPO_PUBLIC_REVENUECAT_USE_TEST_STORE=true
+EXPO_PUBLIC_REVENUECAT_TEST_API_KEY=test_your_test_store_key
+EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID=NicePull Pro
+```
+
+The code additionally requires React Native's `__DEV__` flag, so a release build
+cannot select the Test Store key. Create the three Test Store products, entitlement,
+current Offering, and Paywall in RevenueCat before testing.
+
+### Apple/Google sandbox and production
+
+To test actual store integration, turn Test Store off and provide each app's
+public RevenueCat SDK key:
+
+```dotenv
+EXPO_PUBLIC_REVENUECAT_USE_TEST_STORE=false
+EXPO_PUBLIC_REVENUECAT_IOS_API_KEY=appl_your_public_sdk_key
+EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY=goog_your_public_sdk_key
+EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID=NicePull Pro
+```
+
+Run the database migration and rebuild the native app after installing or updating
+either RevenueCat native package:
+
+```bash
+npm install
+npm run supabase:push
+npx expo run:ios --device
+# Android: npx expo run:android --device
+```
+
+Expo Go is not enough for native purchasing UI. Use an Expo development build,
+TestFlight/App Store sandbox, or a Play internal-testing build. Before shipping,
+set production environment variables in EAS and omit the Test Store key entirely.
+
+`useEntitlements()` exposes `isPro`, `getCustomerInfo`, `presentPaywall`,
+`restorePurchases`, and `presentCustomerCenter`. The app uses the signed-in
+Supabase UUID as RevenueCat's App User ID, preventing anonymous purchases from
+being mixed between NicePull accounts.
+
 A React Native Pokémon card scanner that uses VisionCamera, Nitro Modules, on-device live OCR, and PokéWallet for card matching, images, details, and pricing.
 
 ## Environment setup
