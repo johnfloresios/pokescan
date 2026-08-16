@@ -4,12 +4,13 @@
     "slug": "nicepull",
     "description": "Know what you've pulled.",
     "version": "1.0.0",
-    "icon": "./assets/nicepull-icon.png",
+    "icon": "./assets/nicepull-icon-ios.png",
     "orientation": "portrait",
     "scheme": "nicepull",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {
+      "icon": "./assets/nicepull-icon-ios.png",
       "supportsTablet": true,
       "bundleIdentifier": "com.pokescan.scanner",
       "infoPlist": {
