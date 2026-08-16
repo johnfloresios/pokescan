@@ -269,13 +269,21 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
 export async function recognizeBestCard(uris:readonly string[]):Promise<ScanText>{
   const scans:ScanText[]=[];
   let lastError:unknown;
-  for(const uri of uris){
-    try{scans.push(await recognizeCard(uri));}
+  for(const uri of uris.slice(0,3)){
+    try{
+      const scan=await Promise.race<ScanText>([
+        recognizeCard(uri),
+        new Promise<ScanText>((_resolve,reject)=>setTimeout(()=>reject(new Error('OCR frame timed out.')),4500)),
+      ]);
+      scans.push(scan);
+      // A complete bottom identifier and title is authoritative; avoid doing
+      // more expensive section passes when one still already has everything.
+      if(scan.hints.name&&scan.hints.setCode&&scan.hints.number&&scan.hints.bottomIdentifier)break;
+    }
     catch(error){lastError=error;}
   }
   if(!scans.length)throw lastError instanceof Error?lastError:new Error('No readable card text was detected.');
-  const merged=mergeFrameScans(scans);
-  if(!merged.hints.name||!merged.hints.number)throw new Error('The card name and bottom collector number were not both clear. Adjust glare and try again.');
-  if(!merged.cardDetected&&scans.filter(scan=>scan.ready).length<2)throw new Error('The card edges were not clear enough. Keep the full card inside the guide and hold it straight.');
-  return merged;
+  // Partial results intentionally survive: the confirmation screen lets the
+  // user correct a title, set code, or number instead of restarting forever.
+  return mergeFrameScans(scans);
 }

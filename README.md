@@ -172,16 +172,17 @@ After the development build is installed on the iPhone, start Metro with:
 npx expo start --dev-client --clear
 ```
 
-Open the installed **NicePull development build**, not Expo Go. Point the camera at a card and align every edge within the frame from roughly 12–18 inches away. A moving cyan beam shows that live OCR is active, while the status gives distance, stability, tilt, and glare guidance. NicePull proceeds only after three reads agree on both the card name and bottom collector number. No shutter press is required; the manual shutter unlocks when the same positioning gate passes. NicePull will:
+Open the installed **NicePull development build**, not Expo Go. Point the camera at a card and align every edge within the frame from roughly 12–18 inches away. A moving cyan beam shows that live OCR is active, while the status gives distance, stability, tilt, and glare guidance. The capture cycle always exits: it stops early when name + set code + number are stable, after 24 OCR reads, or after 5.5 seconds. Timeout and max-read exits still use the strongest partial evidence. No shutter press is required; the manual shutter unlocks when the positioning gate passes. NicePull will:
 
 1. Capture three real full-resolution camera images.
 2. Detect the card rectangle and use Core Image perspective correction to flatten and crop it.
 3. Run accurate full-card, title-band, bottom-25%, and tight collector-strip OCR passes.
 4. Score all frames, strongly preferring set code plus full collector number, and merge non-conflicting clues.
-5. Build cascading queries locally, then make the first PokéWallet request.
-6. Display the returned images, details, and prices.
+5. Show an editable confirmation screen for name, set, and collector number.
+6. Build cascading queries locally after confirmation, then make the first PokéWallet request.
+7. Display the returned images, details, and prices.
 
-The OCR layer includes targeted correction for Pokémon TCG suffixes such as `ex`, `GX`, `VMAX`, and `VSTAR`, plus collector-number character corrections. Collector numbers remain mandatory for automatic capture. If the title or bottom number is unreadable, auto-scan keeps gathering frames instead of sending a weak query. After capture, scanning proceeds to ranked results. Candidates receive evidence points for the bottom identifier, set and collector number, full number/total, name similarity, set, HP, card category, type, rarity, stage, regulation mark, attacks, abilities, evolution text, description words, and damage values. Conflicting identifiers subtract points, and PokéWallet result order or artwork never adds points.
+The OCR layer includes targeted correction for Pokémon TCG suffixes such as `ex`, `GX`, `VMAX`, and `VSTAR`, plus collector-number character corrections. Weak or incomplete text is retained for confirmation rather than causing another scanning loop. Candidates receive evidence points for the bottom identifier, set and collector number, full number/total, name similarity, set, HP, card category, type, rarity, stage, regulation mark, attacks, abilities, evolution text, description words, and damage values. Conflicting identifiers subtract points, and PokéWallet result order or artwork never adds points.
 
 If `.env` is missing, the API key is rejected, OCR cannot read the card, or PokéWallet returns an error, NicePull displays the real error instead of fallback data.
 
