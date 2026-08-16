@@ -55,55 +55,78 @@ export async function searchCards(query: string): Promise<Card[]> {
   if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? 'PokéWallet rejected the API key.' : res.status === 429 ? 'Search limit reached. Try again shortly.' : `PokéWallet search failed (${res.status}).`);
   const json = await res.json(); return (json.results ?? []).map(mapCard);
 }
+export type CardEvidenceScore = { card:Card;score:number;signals:string[] };
+
+const normalized = (value?: string) => value?.toLowerCase().replace(/[^a-z0-9]/g, '') ?? '';
+const STOP_WORDS = new Set(['pokemon','basic','stage','damage','during','this','that','from','your','with','when','then','card','cards','attack','energy','each','into','does','more']);
+const evidenceWords = (value?: string) => new Set((value?.toLowerCase().match(/[a-z]{4,}/g) ?? []).filter(word => !STOP_WORDS.has(word)));
+
+/** Point-based identity score. API result order and artwork never add points. */
+export function scoreCardEvidence(card:Card,hints:ScanHints):CardEvidenceScore {
+  let score=0;const signals:string[]=[];
+  const add=(points:number,signal:string)=>{score+=points;if(points>0)signals.push(signal);};
+  const wantedNumber=normalized(hints.number?.split('/')[0]);
+  const resultNumber=normalized(card.number.split('/')[0]);
+  const wantedTotal=normalized(hints.collectorTotal??hints.number?.split('/')[1]);
+  const resultTotal=normalized(card.printedTotal??card.number.split('/')[1]);
+  const wantedSet=normalized(hints.setCode),resultSet=normalized(card.setCode);
+  const wantedBottom=normalized(hints.bottomIdentifier);
+  const exactSetNumber=Boolean(wantedSet&&wantedNumber&&wantedSet===resultSet&&wantedNumber===resultNumber);
+  const exactFraction=Boolean(wantedNumber&&wantedTotal&&wantedNumber===resultNumber&&wantedTotal===resultTotal);
+  const resultIdentifiers=[normalized(card.number),normalized(`${card.setCode}${card.number.split('/')[0]}`),normalized(`${card.setCode}${card.number}`)];
+
+  if(wantedBottom){
+    if(resultIdentifiers.includes(wantedBottom)||exactSetNumber||exactFraction)add(300,'bottom identifier');
+    else add(-170,'bottom identifier conflict');
+  }
+  if(exactSetNumber)add(180,'set + collector number');
+  if(exactFraction)add(150,'full collector number');
+  else if(wantedNumber&&wantedNumber===resultNumber)add(100,'collector number');
+  else if(wantedNumber&&resultNumber)add(-110,'collector number conflict');
+  if(wantedTotal&&resultTotal){
+    add(wantedTotal===resultTotal?55:-45,wantedTotal===resultTotal?'printed set total':'printed set total conflict');
+  }
+  if(wantedSet&&resultSet)add(wantedSet===resultSet?85:-35,wantedSet===resultSet?'set code':'set code conflict');
+  if(hints.setName&&card.setName){
+    const setSimilarity=similarity(hints.setName,card.setName);
+    if(setSimilarity>=.86)add(55,'set name');else if(setSimilarity<.45)add(-20,'set name conflict');
+  }
+
+  if(hints.name&&card.name){
+    const nameSimilarity=similarity(hints.name,card.name);
+    if(normalized(hints.name)===normalized(card.name))add(90,'exact name');
+    else if(nameSimilarity>=.88)add(72,'name');
+    else if(nameSimilarity>=.68)add(Math.round(nameSimilarity*55),'partial name');
+    else add(-65,'name conflict');
+  }
+  if(hints.hp&&card.hp)add(hints.hp===card.hp?38:-45,hints.hp===card.hp?'HP':'HP conflict');
+  if(hints.type&&card.type)add(normalized(card.type).includes(normalized(hints.type))?22:-10,'card type');
+  if(hints.stage&&card.stage)add(normalized(card.stage).includes(normalized(hints.stage))?18:-8,'stage');
+  if(hints.rarity&&card.rarity)add(normalized(card.rarity).includes(normalized(hints.rarity))?18:-6,'rarity');
+  if(hints.regulationMark&&card.regulationMark)add(normalized(hints.regulationMark)===normalized(card.regulationMark)?22:-12,'regulation mark');
+
+  const kind=normalized(card.type).includes('trainer')?'trainer':normalized(card.type).includes('energy')?'energy':'pokemon';
+  if(hints.cardKind)add(hints.cardKind===kind?25:-30,'card category');
+  const searchable=[card.rarity,card.setName,card.text,card.evolvesFrom,card.weakness,card.resistance,card.retreatCost,...(card.abilities??[]),...(card.attacks??[])].filter(Boolean).join(' ');
+  const ocrWords=evidenceWords(hints.evidence),candidateWords=evidenceWords(searchable);
+  const wordMatches=[...ocrWords].filter(word=>candidateWords.has(word)).length;
+  if(wordMatches)add(Math.min(64,wordMatches*8),`${wordMatches} text clues`);
+  const wantedNumbers=new Set(hints.numericEvidence??[]);
+  const candidateNumbers=new Set((searchable.match(/\b\d{1,3}\b/g)??[]).map(value=>value.replace(/^0+/,'')||'0'));
+  const numberMatches=[...wantedNumbers].filter(value=>candidateNumbers.has(value)).length;
+  if(numberMatches)add(Math.min(60,numberMatches*15),`${numberMatches} attack/damage values`);
+  return {card,score,signals};
+}
+
 export function rankCards(cards: Card[], hints: ScanHints): Card[] {
-  const normalized = (value?: string) => value?.toLowerCase().replace(/[^a-z0-9]/g, '') ?? '';
-  const words = (value?: string) => new Set((value?.toLowerCase().match(/[a-z]{4,}/g) ?? []).filter(word => !['pokemon', 'basic', 'stage', 'damage', 'during', 'this', 'that', 'from', 'your'].includes(word)));
-  const wantedNumber = normalized(hints.number?.split('/')[0]);
-  const wantedName = normalized(hints.name);
-  const wantedSet = normalized(hints.setCode);
-  const wantedSetName = normalized(hints.setName);
-  const wantedType = normalized(hints.type);
-  const wantedRarity = normalized(hints.rarity);
-  const wantedStage = normalized(hints.stage);
-  const wantedBottom = normalized(hints.bottomIdentifier);
-  const wantedTotal = normalized(hints.collectorTotal);
-  const wantedNumbers = new Set(hints.numericEvidence ?? []);
-  const evidenceWords = words(hints.evidence);
-  const scored = cards.map((card, index) => {
-    let score = 100 - index;
-    const resultFullIdentifiers = [normalized(card.number), normalized(`${card.setCode}${card.number.split('/')[0]}`)];
-    const fractionBottomMatches = hints.bottomIdentifier?.includes('/')
-      && normalized(card.number.split('/')[0]) === normalized(hints.bottomIdentifier.split('/')[0])
-      && (!card.printedTotal || normalized(card.printedTotal) === normalized(hints.bottomIdentifier.split('/')[1]));
-    if (wantedBottom && (resultFullIdentifiers.includes(wantedBottom) || fractionBottomMatches)) score += 200;
-    else if (wantedBottom) score -= 120;
-    const resultNumber = normalized(card.number.split('/')[0]);
-    if (wantedNumber && resultNumber === wantedNumber) score += 100;
-    else if (wantedNumber && resultNumber) score -= 100;
-    if (wantedName && normalized(card.name) === wantedName) score += 40;
-    else if (wantedName) score += Math.round(similarity(hints.name, card.name) * 40);
-    if (wantedSet && normalized(card.setCode) === wantedSet) score += 50;
-    if (wantedSetName && normalized(card.setName).includes(wantedSetName)) score += 45;
-    if (wantedTotal && normalized(card.printedTotal) === wantedTotal) score += 60;
-    else if (wantedTotal && card.printedTotal) score -= 40;
-    if (hints.hp && card.hp === hints.hp) score += 25;
-    else if (hints.hp && card.hp) score -= 30;
-    if (wantedType && normalized(card.type).includes(wantedType)) score += 20;
-    if (wantedRarity && normalized(card.rarity).includes(wantedRarity)) score += 18;
-    if (wantedStage && normalized(card.stage).includes(wantedStage)) score += 15;
-    const cardEvidence = [card.rarity, card.setName, card.text, card.evolvesFrom, ...(card.abilities ?? []), ...(card.attacks ?? [])].filter(Boolean).join(' ');
-    const evidenceMatches = [...words(cardEvidence)].filter(word => evidenceWords.has(word)).length;
-    score += Math.min(30, evidenceMatches * 5);
-    const resultNumbers = new Set((cardEvidence.match(/\b\d{1,3}\b/g) ?? []).map(value => value.replace(/^0+/, '') || '0'));
-    const numericMatches = [...wantedNumbers].filter(value => resultNumbers.has(value)).length;
-    score += Math.min(36, numericMatches * 12);
-    return { card, score };
-  }).sort((a, b) => b.score - a.score);
-  const bestScore = scored[0]?.score ?? 0;
-  return scored.filter(item => item.score >= Math.max(80, bestScore - 55)).slice(0, 5).map(({ card, score }, index) => ({
-    ...card,
-    confidence: Math.max(.55, Math.min(.99, .58 + score / 400 - index * .04)),
-  }));
+  const scored=cards.map(card=>scoreCardEvidence(card,hints)).sort((a,b)=>b.score-a.score);
+  const bestScore=scored[0]?.score??0;
+  const secondScore=scored[1]?.score??0;
+  return scored.filter(item=>item.score>=Math.max(35,bestScore-110)).slice(0,5).map(({card,score},index)=>{
+    const margin=index===0?Math.max(0,score-secondScore):Math.max(0,score-(scored[index+1]?.score??0));
+    const evidenceConfidence=.42+Math.max(0,score)/850+Math.min(.14,margin/500);
+    return {...card,confidence:Math.max(.45,Math.min(.99,evidenceConfidence-index*.025))};
+  });
 }
 export async function getCard(id: string): Promise<Card> {
   assertConfigured();
