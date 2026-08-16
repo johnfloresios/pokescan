@@ -2,6 +2,7 @@ import { Platform } from 'react-native';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { PhotoRecognizer } from 'react-native-vision-camera-ocr-plus';
 import { extractCardFields } from './card-matcher';
+import { matchPrintedSetCode } from '../data/pokemon-sets';
 
 type TextBox = { text: string; x: number; y: number; width: number; height: number };
 type CardBounds = { x: number; y: number; width: number; height: number };
@@ -188,20 +189,22 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const number = fraction ?? (allowStandaloneSerial ? serial : undefined);
   const collectorTotal = fraction?.split('/')[1]?.replace(/^0+/, '') || undefined;
   const excludedCodes = new Set(['HP', 'EX', 'GX', 'V', 'VMAX', 'VSTAR', 'BASIC', 'STAGE', 'ABILITY', 'TRAINER', 'ITEM', 'ILLUS', 'G', 'H', 'I']);
-  const alphabeticSetCodes = new Set(['SVI','PAL','OBF','MEW','PAR','PAF','TEF','TWM','SFA','SCR','SSP','PRE','JTG','DRI']);
-  const setCode = [...bottomLines].reverse().map(line => {
+  const rawSetCode = [...bottomLines].reverse().map(line => {
     const match = line.match(/^(?:EN\s+)?([A-Z]{1,6}[0-9]{0,3}[A-Z]?)(?:\s+EN)?$/i)?.[1];
     const upper=match?.toUpperCase();
-    return match && upper && !excludedCodes.has(upper) && (/\d/.test(match)||alphabeticSetCodes.has(upper)) ? match : undefined;
+    return match && upper && !excludedCodes.has(upper) ? match : undefined;
   }).find(Boolean);
+  const catalogSet=matchPrintedSetCode(bottomLines);
+  const setCode=catalogSet?.confidence===1?catalogSet.set.code:rawSetCode&&/\d/.test(rawSetCode)?rawSetCode:catalogSet?.set.code;
   const promoIdentifier = bottomLines.map(line => line.toUpperCase().replace(/[^A-Z0-9]/g, '')).find(line => /^(?:DP|SWSH|SM|XY|BW|HGSS)\d{1,3}$/.test(line));
   const identifierMatch = bottomLines.map(line => normalizeCardLine(line).match(/\b([A-Z]{1,6}\d{0,3}[A-Z]?)\s+[- ]?\s*(\d{1,3}(?:\s*\/\s*\d{1,3})?)\b/i)).find(Boolean);
-  const compactIdentifier = identifierMatch ? `${identifierMatch[1]} ${identifierMatch[2].replace(/\s/g, '')}` : undefined;
+  const identifierSetCode=identifierMatch?(matchPrintedSetCode([identifierMatch[1]])?.set.code??identifierMatch[1]):undefined;
+  const compactIdentifier = identifierMatch && identifierSetCode ? `${identifierSetCode} ${identifierMatch[2].replace(/\s/g, '')}` : undefined;
   const bottomFraction=bottomLines.map(plausibleFraction).find(Boolean);
   const bottomIdentifier = promoIdentifier ?? compactIdentifier ?? bottomFraction;
   const promoParts = promoIdentifier?.match(/^([A-Z]+)(\d+)$/);
   const resolvedNumber = fraction ?? identifierMatch?.[2]?.replace(/\s/g, '') ?? promoParts?.[2] ?? number;
-  const resolvedSetCode = identifierMatch?.[1] ?? promoParts?.[1] ?? setCode;
+  const resolvedSetCode = identifierSetCode ?? promoParts?.[1] ?? setCode;
   const setId = bottomLines.map(line => line.match(/\bset\s*(?:id)?\s*[:#-]?\s*(\d{4,8})\b/i)?.[1]).find(Boolean);
   const regulationMark = bottomLines.map(line => line.match(/^(?:REGULATION\s*)?([GHI])$/i)?.[1]?.toUpperCase()).find(Boolean);
 
@@ -220,12 +223,7 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const type = energyTypes.find(candidate => clean.some(line => new RegExp(`^(?:TYPE\\s*)?${candidate}$`, 'i').test(line)));
   const rarity = clean.map(line => line.match(/\b(AMAZING RARE|COMMON|UNCOMMON|RARE(?:\s+(?:HOLO|SECRET|RAINBOW|ULTRA|SHINY|PROMO))?)\b/i)?.[1])
     .find(Boolean)?.replace(/\b\w/g, character => character.toUpperCase());
-  const knownSets = [
-    'Scarlet & Violet', 'Sword & Shield', 'Sun & Moon', 'Paldea Evolved', 'Obsidian Flames',
-    'Temporal Forces', 'Twilight Masquerade', 'Surging Sparks', 'Journey Together',
-    'Destined Rivals', 'Prismatic Evolutions', 'Crown Zenith', 'Lost Origin',
-  ];
-  const setName = knownSets.find(candidate => clean.some(line => line.toLowerCase().includes(candidate.toLowerCase())));
+  const setName = catalogSet?.set.name;
   const numericEvidence = [...new Set(clean.flatMap(line => [...line.matchAll(/\b(\d{1,3})(?=\s*(?:[+x×]|damage|$))/gi)].map(match => match[1].replace(/^0+/, '') || '0'))
     .filter(value => Number(value) >= 10 && Number(value) <= 400 && value !== hp && value !== number?.split('/')[0].replace(/^0+/, '') && value !== collectorTotal))];
   const textFallback = extractCardFields(clean.join('\n'));
