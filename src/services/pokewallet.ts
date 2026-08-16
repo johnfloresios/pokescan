@@ -79,6 +79,12 @@ export function scoreCardEvidence(card:Card,hints:ScanHints):CardEvidenceScore {
     if(resultIdentifiers.includes(wantedBottom)||exactSetNumber||exactFraction)add(300,'bottom identifier');
     else add(-170,'bottom identifier conflict');
   }
+  // A complete fraction is a set fingerprint. Shared attacks and rule text
+  // must not overcome a direct collector-number or printed-total conflict.
+  if(wantedNumber&&wantedTotal&&resultNumber&&resultTotal&&!exactFraction){
+    if(wantedNumber!==resultNumber)add(-190,'collector number conflict');
+    if(wantedTotal!==resultTotal)add(-120,'printed set total conflict');
+  }
   if(exactSetNumber)add(180,'set + collector number');
   if(exactFraction)add(150,'full collector number');
   else if(wantedNumber&&wantedNumber===resultNumber)add(100,'collector number');

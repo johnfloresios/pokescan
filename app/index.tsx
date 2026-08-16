@@ -508,10 +508,10 @@ function CameraScreen({ onClose, onPhoto, error }: any) {
 
   const captureBurst=useCallback(async()=>{
     const paths:string[]=[];
-    // Three full-resolution stills provide useful variation in focus and foil
-    // glare without the latency and memory pressure of a five-image burst.
-    for(let index=0;index<3;index++){
-      setStatus(`Capturing detail ${index+1} of 3…`);
+    // Two full-resolution stills plus multiple native OCR preprocessing passes
+    // retain glare/focus diversity without making every scan feel like a burst.
+    for(let index=0;index<2;index++){
+      setStatus(`Capturing detail ${index+1} of 2…`);
       try{
         const photo=await Promise.race([
           photoOutput.capturePhotoToFile({flashMode:'off',enableShutterSound:index===0},{}),
@@ -523,7 +523,7 @@ function CameraScreen({ onClose, onPhoto, error }: any) {
         // the camera declined a second or third back-to-back photo.
         break;
       }
-      if(index<2)await new Promise(resolve=>setTimeout(resolve,160));
+      if(index<1)await new Promise(resolve=>setTimeout(resolve,140));
     }
     return paths;
   },[photoOutput]);
@@ -552,7 +552,7 @@ function CameraScreen({ onClose, onPhoto, error }: any) {
     const timeout=setTimeout(()=>{
       setStatus('Time reached · using the best scan…');
       void finishScan(bestLiveScan.current??undefined);
-    },3800);
+    },3000);
     return()=>clearTimeout(timeout);
   },[finishScan,phase,ready]);
 
@@ -634,7 +634,8 @@ function CameraScreen({ onClose, onPhoto, error }: any) {
 
   const manualCapture = async () => {
     if (locked.current || !ready) return;
-    if(!positionReady.current){Alert.alert('Card is not ready',status);return;}
+    // The guide controls auto-capture, but the shutter is always available.
+    // Still-image OCR can often recover a card that live preview OCR cannot.
     locked.current = true;
     setPhase('processing');
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -655,7 +656,7 @@ function CameraScreen({ onClose, onPhoto, error }: any) {
     <LinearGradient pointerEvents="none" colors={['rgba(3,8,16,.78)', 'transparent', 'transparent', 'rgba(3,8,16,.9)']} locations={[0,.25,.7,1]} style={StyleSheet.absoluteFill} />
     <SafeAreaView style={s.cameraSafe}><AppHeader title="Scan your card" onHome={onClose} onClose={onClose}/>
       <View style={s.frameWrap}><View style={[s.frame,canCapture&&s.frameReady]}><View style={s.bottomStripGuide}><Text style={s.bottomStripText}>SET + NUMBER</Text></View><Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" /><ScannerBeam /></View><View style={s.hold}><MaterialCommunityIcons name={canCapture?'check-circle':'cards-outline'} size={18} color={canCapture?C.green:C.cyan} /><Text style={s.holdText}>FIT FULL CARD · KEEP 12–18 IN AWAY</Text></View></View>
-      <View><View style={s.scanProgressTrack}><View style={[s.scanProgressFill,{width:`${Math.min(100,attempts/MAX_LIVE_FRAMES*100)}%`}]}/></View><Text style={[s.cameraHelp,canCapture&&{color:C.green}]}>{error ? 'Scanner unavailable' : ready ? status : 'Starting camera…'}</Text><Text style={s.scanPhaseText}>{phase==='processing'?'PROCESSING PHOTOS':phase==='finished'?'FINISHED':`${Math.min(attempts,MAX_LIVE_FRAMES)} / ${MAX_LIVE_FRAMES} READS`}</Text>{!!error && <Text style={s.cameraError}>{error}</Text>}<View style={s.shutterRow}><View style={{width:48}} /><Pressable disabled={!ready || locked.current || !canCapture} hitSlop={14} onPress={manualCapture} style={({pressed}) => [s.shutterOuter,canCapture&&s.shutterReady, (!ready || locked.current || !canCapture) && {opacity:.38}, pressed && {transform:[{scale:.94}]}]}><View style={s.shutterInner} /></Pressable><View style={s.autoBadge}><MaterialCommunityIcons name="line-scan" size={16} color={C.cyan}/><Text style={s.autoBadgeText}>BURST</Text></View></View></View>
+      <View><View style={s.scanProgressTrack}><View style={[s.scanProgressFill,{width:`${Math.min(100,attempts/MAX_LIVE_FRAMES*100)}%`}]}/></View><Text style={[s.cameraHelp,canCapture&&{color:C.green}]}>{error ? 'Scanner unavailable' : ready ? status : 'Starting camera…'}</Text><Text style={s.scanPhaseText}>{phase==='processing'?'PROCESSING PHOTOS':phase==='finished'?'FINISHED':`${Math.min(attempts,MAX_LIVE_FRAMES)} / ${MAX_LIVE_FRAMES} READS`}</Text>{!!error && <Text style={s.cameraError}>{error}</Text>}<View style={s.shutterRow}><View style={{width:48}} /><Pressable disabled={!ready || locked.current} hitSlop={14} onPress={manualCapture} style={({pressed}) => [s.shutterOuter,canCapture&&s.shutterReady, (!ready || locked.current) && {opacity:.38}, pressed && {transform:[{scale:.94}]}]}><View style={s.shutterInner} /></Pressable><View style={s.autoBadge}><MaterialCommunityIcons name="line-scan" size={16} color={C.cyan}/><Text style={s.autoBadgeText}>BURST</Text></View></View></View>
     </SafeAreaView>
   </View>;
 }

@@ -106,6 +106,22 @@ public class CardTextRecognizerModule: Module {
             collectorRequest.regionOfInterest = collectorRegion
             try ocrHandler.perform([collectorRequest])
             bottomLines += (collectorRequest.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+
+            // Foil glare and gray copyright strips often have too little local
+            // contrast for a single OCR pass. A sharpened monochrome variant
+            // supplies independent glyph evidence without another camera frame.
+            if let enhancedImage = enhancedForTinyText(cgImage: ocrImage) {
+              let enhancedHandler = VNImageRequestHandler(cgImage: enhancedImage, orientation: ocrOrientation)
+              let enhancedRequest = VNRecognizeTextRequest()
+              enhancedRequest.recognitionLevel = .accurate
+              enhancedRequest.usesLanguageCorrection = false
+              enhancedRequest.recognitionLanguages = ["en-US"]
+              enhancedRequest.customWords = bottomRequest.customWords
+              enhancedRequest.minimumTextHeight = 0.0015
+              enhancedRequest.regionOfInterest = collectorRegion
+              try enhancedHandler.perform([enhancedRequest])
+              bottomLines += (enhancedRequest.results ?? []).compactMap { $0.topCandidates(2).first?.string }
+            }
           }
         var payload: [String: Any] = [
           "text": (titleLines + lines + bottomLines).joined(separator: "\n"),
@@ -122,6 +138,21 @@ public class CardTextRecognizerModule: Module {
       }
     }
   }
+}
+
+private func enhancedForTinyText(cgImage: CGImage) -> CGImage? {
+  let input = CIImage(cgImage: cgImage)
+  guard let controls = CIFilter(name: "CIColorControls") else { return nil }
+  controls.setValue(input, forKey: kCIInputImageKey)
+  controls.setValue(0.0, forKey: kCIInputSaturationKey)
+  controls.setValue(1.55, forKey: kCIInputContrastKey)
+  controls.setValue(0.03, forKey: kCIInputBrightnessKey)
+  guard let contrasted = controls.outputImage,
+        let sharpen = CIFilter(name: "CISharpenLuminance") else { return nil }
+  sharpen.setValue(contrasted, forKey: kCIInputImageKey)
+  sharpen.setValue(0.65, forKey: kCIInputSharpnessKey)
+  guard let output = sharpen.outputImage else { return nil }
+  return CIContext(options: [.cacheIntermediates: false]).createCGImage(output, from: output.extent)
 }
 
 private func perspectiveCorrect(cgImage: CGImage, rectangle: VNRectangleObservation) -> CGImage? {

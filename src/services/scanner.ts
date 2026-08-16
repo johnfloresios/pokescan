@@ -64,16 +64,29 @@ export function mergeFrameScans(scans:readonly ScanText[]):ScanText{
     return [...groups.values()].sort((a,b)=>(b.count*240+b.quality)-(a.count*240+a.quality))[0]?.value;
   };
   hints.name=consensus('name',plausibleCardName);
-  hints.number=consensus('number',value=>/^\d{1,3}(?:\/\d{1,3})?$/.test(value.replace(/\s/g,'')))?.replace(/\s/g,'');
-  hints.setCode=consensus('setCode',value=>/^[A-Za-z]{1,6}\d{0,3}[A-Za-z]?$/.test(value)&&!NON_NAMES.test(value));
-  const fields:(keyof ScanHints)[]=['collectorTotal','bottomIdentifier','setId','setName','rarity','hp','type','stage','cardKind','regulationMark'];
+
+  // Preserve one coherent bottom-strip identity. Mixing a set code from one
+  // glare pattern with a collector number from another can invent a primary
+  // key that did not occur on any captured frame.
+  const identityQuality=(scan:ScanText)=>(scan.hints.bottomIdentifier?260:0)+(scan.hints.number?.includes('/')?180:0)+(scan.hints.setCode?120:0)+scanCompleteness(scan);
+  const identity=[...ranked].filter(scan=>scan.hints.number).sort((a,b)=>identityQuality(b)-identityQuality(a))[0];
+  if(identity){
+    hints.number=identity.hints.number?.replace(/\s/g,'');
+    hints.setCode=identity.hints.setCode;
+    hints.bottomIdentifier=identity.hints.bottomIdentifier;
+    hints.collectorTotal=identity.hints.collectorTotal;
+  }else{
+    hints.number=undefined;hints.setCode=undefined;hints.bottomIdentifier=undefined;hints.collectorTotal=undefined;
+  }
+  const fields:(keyof ScanHints)[]=['setId','setName','rarity','hp','type','stage','cardKind','regulationMark'];
   for(const field of fields){
     if(hints[field])continue;
     const candidate=ranked.find(scan=>scan.hints[field]);
     if(candidate)(hints as Record<string,unknown>)[field]=candidate.hints[field];
   }
   if(hints.number?.includes('/'))hints.collectorTotal=hints.number.split('/')[1]?.replace(/^0+/,'')||undefined;
-  if(hints.number)hints.bottomIdentifier=hints.setCode?`${hints.setCode} ${hints.number}`:hints.number;
+  // Do not synthesize bottomIdentifier: its very high match weight is reserved
+  // for an identifier actually observed in the physical bottom strip.
   hints.numericEvidence=[...new Set(ranked.flatMap(scan=>scan.hints.numericEvidence??[]))];
   hints.evidence=ranked.map(scan=>scan.hints.evidence).filter(Boolean).join(' ');
   const queries=queriesFromHints(hints as ScanHints);
@@ -122,8 +135,13 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const spatialBottomLines = normalizedBoxes.filter(box => cardRelativeY(box) <= bottomThreshold).sort((a, b) => b.y - a.y || a.x - b.x).map(box => box.text);
   const bottomLines = [...preferredBottom, ...(spatialBottomLines.length ? spatialBottomLines : clean.slice(Math.max(1, Math.floor(clean.length * 0.55))))];
 
-  const fractionLine = [...bottomLines, ...clean].find(x => /\b\d{1,3}\s*\/\s*\d{1,3}\b/.test(x));
-  const fraction = fractionLine?.match(/\d{1,3}\s*\/\s*\d{1,3}/)?.[0];
+  const plausibleFraction=(value:string)=>{
+    const match=value.match(/\b(\d{1,3})\s*\/\s*(\d{1,3})\b/);
+    if(!match)return undefined;
+    const local=Number(match[1]),total=Number(match[2]);
+    return local>0&&local<=999&&total>=10&&total<=999?`${match[1]}/${match[2]}`:undefined;
+  };
+  const fraction = [...bottomLines, ...clean].map(plausibleFraction).find(Boolean);
   // Header labels are frequently returned as partial words (for example
   // "BAS" from BASIC). Never allow those fragments to become a card name.
   const ignored = /^(?:bas(?:i|1|l)?(?:c)?|sta(?:g(?:e)?)?\s*(?:\d|[iIlL])?|evo(?:lves?)?\s*(?:from)?|trainer|item|supporter|stadium|special energy|basic energy|ability|weakness|resistance|retreat|hp\s*\d+|illus\.?|no\.?|©)$/i;
@@ -179,7 +197,8 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const promoIdentifier = bottomLines.map(line => line.toUpperCase().replace(/[^A-Z0-9]/g, '')).find(line => /^(?:DP|SWSH|SM|XY|BW|HGSS)\d{1,3}$/.test(line));
   const identifierMatch = bottomLines.map(line => normalizeCardLine(line).match(/\b([A-Z]{1,6}\d{0,3}[A-Z]?)\s+[- ]?\s*(\d{1,3}(?:\s*\/\s*\d{1,3})?)\b/i)).find(Boolean);
   const compactIdentifier = identifierMatch ? `${identifierMatch[1]} ${identifierMatch[2].replace(/\s/g, '')}` : undefined;
-  const bottomIdentifier = promoIdentifier ?? compactIdentifier ?? fraction;
+  const bottomFraction=bottomLines.map(plausibleFraction).find(Boolean);
+  const bottomIdentifier = promoIdentifier ?? compactIdentifier ?? bottomFraction;
   const promoParts = promoIdentifier?.match(/^([A-Z]+)(\d+)$/);
   const resolvedNumber = fraction ?? identifierMatch?.[2]?.replace(/\s/g, '') ?? promoParts?.[2] ?? number;
   const resolvedSetCode = identifierMatch?.[1] ?? promoParts?.[1] ?? setCode;
@@ -291,8 +310,8 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
 export async function recognizeBestCard(uris:readonly string[]):Promise<ScanText>{
   const scans:ScanText[]=[];
   let lastError:unknown;
-  const deadline=Date.now()+6000;
-  for(const uri of uris.slice(0,3)){
+  const deadline=Date.now()+4500;
+  for(const uri of uris.slice(0,2)){
     const remaining=deadline-Date.now();
     if(remaining<=150)break;
     try{
