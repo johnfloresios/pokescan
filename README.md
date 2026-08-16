@@ -172,7 +172,7 @@ After the development build is installed on the iPhone, start Metro with:
 npx expo start --dev-client --clear
 ```
 
-Open the installed **NicePull development build**, not Expo Go. Point the camera at a card and align every edge within the frame from roughly 12–18 inches away. A moving cyan beam shows that live OCR is active, while the status gives distance, stability, tilt, and glare guidance. The capture cycle always exits: it stops early when name + set code + number are stable, after 24 OCR reads, or after 5.5 seconds. Timeout and max-read exits still use the strongest partial evidence. No shutter press is required; the manual shutter unlocks when the positioning gate passes. NicePull will:
+Open the installed **NicePull development build**, not Expo Go. Point the camera at a card and align every edge within the frame from roughly 12–18 inches away. A moving cyan beam shows that live OCR is active, while the status gives distance, stability, tilt, and glare guidance. The capture cycle always exits: it stops early when name + set code + number are stable, after 16 OCR reads, or after 3.8 seconds. Timeout and max-read exits still use the strongest partial evidence. No shutter press is required; the manual shutter unlocks when the positioning gate passes. NicePull will:
 
 1. Capture three real full-resolution camera images.
 2. Detect the card rectangle and use Core Image perspective correction to flatten and crop it.

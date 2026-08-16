@@ -28,6 +28,13 @@ export function scanCompleteness(scan:ScanText){
   return score;
 }
 
+const NON_NAMES=/^(?:stage\s*(?:[iIlL12]|one|two)?|basic|evolves?\s*from|trainer|item|supporter|stadium|ability|energy|weakness|resistance|retreat|rule|card|hp|no\.?|illus(?:trator)?\.?)$/i;
+const plausibleCardName=(value?:string)=>{
+  const clean=value?.replace(/\s+/g,' ').trim()??'';
+  const letters=clean.replace(/[^A-Za-zÀ-ÿ]/g,'');
+  return letters.length>=3&&letters.length<=32&&!NON_NAMES.test(clean)&&!/^(?:stage|basic|hp|trainer|ability)\b/i.test(clean)&&/^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .:'’&\-]{2,40}$/.test(clean);
+};
+
 const cleanQueryPart=(value?:string)=>value?.replace(/\s+/g,' ').trim()||'';
 function queriesFromHints(hints:ScanHints){
   const name=cleanQueryPart(hints.name),setCode=cleanQueryPart(hints.setCode),number=cleanQueryPart(hints.number);
@@ -46,12 +53,27 @@ export function mergeFrameScans(scans:readonly ScanText[]):ScanText{
   const ranked=[...scans].sort((a,b)=>scanCompleteness(b)-scanCompleteness(a));
   const best=ranked[0];
   const hints:{[K in keyof ScanHints]?:ScanHints[K]}={...best.hints};
-  const fields:(keyof ScanHints)[]=['name','number','collectorTotal','bottomIdentifier','setCode','setId','setName','rarity','hp','type','stage','cardKind','regulationMark'];
+  const consensus=<K extends keyof ScanHints>(field:K,valid:(value:string)=>boolean)=>{
+    const groups=new Map<string,{value:string;count:number;quality:number}>();
+    for(const scan of ranked){
+      const raw=scan.hints[field];if(typeof raw!=='string'||!valid(raw))continue;
+      const value=raw.replace(/\s+/g,' ').trim();const key=value.toLowerCase().replace(/[^a-z0-9/]/g,'');
+      const current=groups.get(key);const quality=scanCompleteness(scan);
+      groups.set(key,current?{...current,count:current.count+1,quality:Math.max(current.quality,quality)}:{value,count:1,quality});
+    }
+    return [...groups.values()].sort((a,b)=>(b.count*240+b.quality)-(a.count*240+a.quality))[0]?.value;
+  };
+  hints.name=consensus('name',plausibleCardName);
+  hints.number=consensus('number',value=>/^\d{1,3}(?:\/\d{1,3})?$/.test(value.replace(/\s/g,'')))?.replace(/\s/g,'');
+  hints.setCode=consensus('setCode',value=>/^[A-Za-z]{1,6}\d{0,3}[A-Za-z]?$/.test(value)&&!NON_NAMES.test(value));
+  const fields:(keyof ScanHints)[]=['collectorTotal','bottomIdentifier','setId','setName','rarity','hp','type','stage','cardKind','regulationMark'];
   for(const field of fields){
     if(hints[field])continue;
     const candidate=ranked.find(scan=>scan.hints[field]);
     if(candidate)(hints as Record<string,unknown>)[field]=candidate.hints[field];
   }
+  if(hints.number?.includes('/'))hints.collectorTotal=hints.number.split('/')[1]?.replace(/^0+/,'')||undefined;
+  if(hints.number)hints.bottomIdentifier=hints.setCode?`${hints.setCode} ${hints.number}`:hints.number;
   hints.numericEvidence=[...new Set(ranked.flatMap(scan=>scan.hints.numericEvidence??[]))];
   hints.evidence=ranked.map(scan=>scan.hints.evidence).filter(Boolean).join(' ');
   const queries=queriesFromHints(hints as ScanHints);
@@ -104,9 +126,9 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const fraction = fractionLine?.match(/\d{1,3}\s*\/\s*\d{1,3}/)?.[0];
   // Header labels are frequently returned as partial words (for example
   // "BAS" from BASIC). Never allow those fragments to become a card name.
-  const ignored = /^(?:bas(?:i|1|l)?(?:c)?|sta(?:g(?:e)?)?\s*\d*|evo(?:lves?)?\s*(?:from)?|trainer|item|supporter|stadium|special energy|basic energy|ability|weakness|resistance|retreat|hp\s*\d+|illus\.?|no\.?|©)$/i;
+  const ignored = /^(?:bas(?:i|1|l)?(?:c)?|sta(?:g(?:e)?)?\s*(?:\d|[iIlL])?|evo(?:lves?)?\s*(?:from)?|trainer|item|supporter|stadium|special energy|basic energy|ability|weakness|resistance|retreat|hp\s*\d+|illus\.?|no\.?|©)$/i;
   const titleFromLine = (line: string) => line
-    .replace(/^(?:BASIC|STAGE\s*\d*)\s+/i, '')
+    .replace(/^(?:BASIC|STAGE\s*(?:\d|[iIlL])?)\s+/i, '')
     .replace(/^(?:TRAINER|ITEM|SUPPORTER|STADIUM)\s*[-:·]?\s+/i, '')
     .replace(/\bHP\s*\d{2,3}\b/ig, '')
     .replace(/\b\d{2,3}\s*HP\b/ig, '')
@@ -122,7 +144,7 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const validName = (value: string) => {
     const letters = value.replace(/[^A-Za-zÀ-ÿ]/g, '');
     const suspiciousHeaderCode = letters.length <= 6 && letters === letters.toUpperCase();
-    return /^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .:'’&\-]{2,40}$/.test(value)
+    return plausibleCardName(value)
       && !ignored.test(value)
       && !suspiciousHeaderCode
       && value.split(/\s+/).length <= 4;
@@ -188,7 +210,7 @@ const buildSearch = (lines: string[], boxes: TextBox[] = [], cardBounds?: CardBo
   const numericEvidence = [...new Set(clean.flatMap(line => [...line.matchAll(/\b(\d{1,3})(?=\s*(?:[+x×]|damage|$))/gi)].map(match => match[1].replace(/^0+/, '') || '0'))
     .filter(value => Number(value) >= 10 && Number(value) <= 400 && value !== hp && value !== number?.split('/')[0].replace(/^0+/, '') && value !== collectorTotal))];
   const textFallback = extractCardFields(clean.join('\n'));
-  const resolvedName = name ?? textFallback.name;
+  const resolvedName = [name,textFallback.name].find(plausibleCardName);
   const resolvedHp = hp ?? textFallback.hp;
   const resolvedType = type ?? textFallback.type;
   const resolvedStage = stage ?? textFallback.stage;
@@ -269,11 +291,14 @@ export async function recognizeCard(uri: string): Promise<ScanText> {
 export async function recognizeBestCard(uris:readonly string[]):Promise<ScanText>{
   const scans:ScanText[]=[];
   let lastError:unknown;
+  const deadline=Date.now()+6000;
   for(const uri of uris.slice(0,3)){
+    const remaining=deadline-Date.now();
+    if(remaining<=150)break;
     try{
       const scan=await Promise.race<ScanText>([
         recognizeCard(uri),
-        new Promise<ScanText>((_resolve,reject)=>setTimeout(()=>reject(new Error('OCR frame timed out.')),4500)),
+        new Promise<ScanText>((_resolve,reject)=>setTimeout(()=>reject(new Error('OCR frame timed out.')),Math.min(3000,remaining))),
       ]);
       scans.push(scan);
       // A complete bottom identifier and title is authoritative; avoid doing

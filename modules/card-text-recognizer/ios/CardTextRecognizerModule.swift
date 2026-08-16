@@ -32,10 +32,12 @@ public class CardTextRecognizerModule: Module {
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation)
         let rectangleRequest = VNDetectRectanglesRequest()
         rectangleRequest.maximumObservations = 3
-        rectangleRequest.minimumConfidence = 0.55
+        rectangleRequest.minimumConfidence = 0.48
         rectangleRequest.minimumAspectRatio = 0.55
         rectangleRequest.maximumAspectRatio = 0.82
-        rectangleRequest.minimumSize = 0.28
+        // Cards are intentionally framed farther from the lens. Accept a
+        // smaller rectangle, then perspective-crop it to full OCR resolution.
+        rectangleRequest.minimumSize = 0.16
         rectangleRequest.quadratureTolerance = 22
         do {
           try handler.perform([rectangleRequest])
