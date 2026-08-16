@@ -51,7 +51,7 @@ function mapCard(raw: any, i = 0): Card {
 export async function searchCards(query: string): Promise<Card[]> {
   assertConfigured();
   if (!query.trim()) throw new Error('No searchable card text was detected.');
-  const res = await fetch(endpoint(`/search?q=${encodeURIComponent(query)}&limit=12`), { headers: headers() });
+  const res = await fetch(endpoint(`/search?q=${encodeURIComponent(query)}&limit=30`), { headers: headers() });
   if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? 'PokéWallet rejected the API key.' : res.status === 429 ? 'Search limit reached. Try again shortly.' : `PokéWallet search failed (${res.status}).`);
   const json = await res.json(); return (json.results ?? []).map(mapCard);
 }
@@ -93,6 +93,8 @@ export function scoreCardEvidence(card:Card,hints:ScanHints):CardEvidenceScore {
     add(wantedTotal===resultTotal?55:-45,wantedTotal===resultTotal?'printed set total':'printed set total conflict');
   }
   if(wantedSet&&resultSet)add(wantedSet===resultSet?85:-35,wantedSet===resultSet?'set code':'set code conflict');
+  const visualSet=hints.setCandidates?.find(candidate=>normalized(candidate.code)===resultSet);
+  if(visualSet)add(Math.round(visualSet.confidence*90),'set symbol');
   if(hints.setName&&card.setName){
     const setSimilarity=similarity(hints.setName,card.setName);
     if(setSimilarity>=.86)add(55,'set name');else if(setSimilarity<.45)add(-20,'set name conflict');
@@ -126,9 +128,8 @@ export function scoreCardEvidence(card:Card,hints:ScanHints):CardEvidenceScore {
 
 export function rankCards(cards: Card[], hints: ScanHints): Card[] {
   const scored=cards.map(card=>scoreCardEvidence(card,hints)).sort((a,b)=>b.score-a.score);
-  const bestScore=scored[0]?.score??0;
   const secondScore=scored[1]?.score??0;
-  return scored.filter(item=>item.score>=Math.max(35,bestScore-110)).slice(0,5).map(({card,score},index)=>{
+  return scored.slice(0,30).map(({card,score},index)=>{
     const margin=index===0?Math.max(0,score-secondScore):Math.max(0,score-(scored[index+1]?.score??0));
     const evidenceConfidence=.42+Math.max(0,score)/850+Math.min(.14,margin/500);
     return {...card,confidence:Math.max(.45,Math.min(.99,evidenceConfidence-index*.025))};

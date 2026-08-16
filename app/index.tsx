@@ -11,17 +11,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Card } from '@/types';
 import { C, shadow } from '@/theme';
-import { analyzeLiveText, mergeFrameScans, recognizeBestCard, scanCompleteness, ScanText } from '@/services/scanner';
-import { cardImageSource, getCard, rankCards, scoreCardEvidence, searchCards } from '@/services/pokewallet';
+import { analyzeLiveText, matchSetSymbols, mergeFrameScans, recognizeBestCard, scanCompleteness, ScanText } from '@/services/scanner';
+import { cardImageSource, getCard, rankCards, searchCards } from '@/services/pokewallet';
 import { isSupabaseConfigured, supabase } from '@/services/supabase';
 import { PRO_FEATURES, useEntitlements } from '@/hooks/useEntitlements';
 import { useConditions, useRarities, useVariants } from '@/hooks/useCardOptions';
 import { FeatureGate } from '@/components/FeatureGate';
 import { adjustedCardValue, suggestBalanceCards, tradeTotal, type MultiplierMap, type TradeItem, type TradeSide } from '@/services/trade-builder';
-import { findSet, type PokemonSetDefinition } from '@/data/pokemon-sets';
 
-type Screen = 'home' | 'collection' | 'trade' | 'camera' | 'analyzing' | 'confirmation' | 'matches' | 'detail';
-type ScanDraft={imageUri:string;scan:ScanText;setSuggestions:PokemonSetDefinition[]};
+type Screen = 'home' | 'collection' | 'trade' | 'camera' | 'analyzing' | 'matches' | 'detail';
 const money = (n: number | null) => n == null ? '—' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const KeyboardAwareScrollView=forwardRef<ScrollView,ScrollViewProps>(function KeyboardAwareScrollView({children,...props},ref){
@@ -37,7 +35,6 @@ export default function App() {
   const [selected, setSelected] = useState<Card | null>(null);
   const [selectedIsSaved, setSelectedIsSaved] = useState(false);
   const [selectedSavedRow, setSelectedSavedRow] = useState<ScannedCardRow|null>(null);
-  const [scanDraft,setScanDraft]=useState<ScanDraft|null>(null);
   const [error, setError] = useState('');
   const [session, setSession] = useState<Session | null | undefined>(undefined);
 
@@ -56,11 +53,9 @@ export default function App() {
       const found = await searchCards(candidate);
       cards = [...cards, ...found.filter(item => !cards.some(existing => existing.id === item.id))];
       if(!scan)break;
-      const scored=cards.map(card=>scoreCardEvidence(card,scan.hints)).sort((a,b)=>b.score-a.score);
-      const lead=(scored[0]?.score??0)-(scored[1]?.score??0);
-      // Stop cascading API queries only when several independent card clues
-      // produce a decisive leader; an isolated collector number is not enough.
-      if((scored[0]?.score??0)>=340&&lead>=90&&(scored[0]?.signals.length??0)>=3)break;
+      // Queries are bounded and stop as soon as the requested result page is
+      // full. This is one scan operation, never a continuous API loop.
+      if(cards.length>=30)break;
     }
     setMatches(scan ? rankCards(cards, scan.hints) : cards); setScreen('matches');
   };
@@ -76,17 +71,30 @@ export default function App() {
         catch{
           scan=liveFallback??{text:'',lines:[],query:'',queries:[],hints:{},cardDetected:false,ready:false};
         }
-        let setSuggestions:PokemonSetDefinition[]=[];
-        if(!scan.hints.setCode&&scan.hints.name&&scan.hints.number){
+        if(scan.hints.name&&scan.hints.number){
           try{
             const possible=await searchCards(`${scan.hints.name} ${scan.hints.number}`);
             const wanted=scan.hints.number.split('/')[0].replace(/^0+/,'');
             const seen=new Set<string>();
-            setSuggestions=possible.filter(card=>card.number.split('/')[0].replace(/^0+/,'')===wanted)
-              .map(card=>({code:card.setCode,name:card.setName})).filter(set=>{const key=`${set.code}|${set.name}`;if(seen.has(key))return false;seen.add(key);return true;}).slice(0,3);
-          }catch{/* Set selection remains manually editable offline. */}
+            const exactCandidates=possible.filter(card=>card.number.split('/')[0].replace(/^0+/,'')===wanted)
+              .filter(card=>{const key=`${card.setCode}|${card.setName}`;if(seen.has(key))return false;seen.add(key);return true;}).slice(0,5);
+            const detectedSetIsPossible=!scan.hints.setCode||exactCandidates.some(card=>card.setCode.toLowerCase()===scan.hints.setCode?.toLowerCase());
+            if(scan.hints.setCode&&!detectedSetIsPossible){
+              // OCR may produce another valid code (for example CRI -> CRE).
+              // A valid-looking but impossible code must not bypass visual matching.
+              scan={...scan,hints:{...scan.hints,setCode:undefined,setName:undefined,bottomIdentifier:scan.hints.number}};
+            }
+            const visual=await matchSetSymbols(uris[0]??'',exactCandidates.map(card=>({code:card.setCode,name:card.setName,imageUrl:card.imageUrl})));
+            const visualOrder=new Map(visual.map((match,index)=>[`${match.code}|${match.name}`,index]));
+            exactCandidates.sort((a,b)=>(visualOrder.get(`${a.setCode}|${a.setName}`)??99)-(visualOrder.get(`${b.setCode}|${b.setName}`)??99));
+            const first=visual[0],second=visual[1];
+            if(visual.length)scan={...scan,hints:{...scan.hints,setCandidates:visual.map(match=>({code:match.code,confidence:match.confidence}))}};
+            if(first&&first.confidence>=.55&&(!second||first.confidence-second.confidence>=.1)){
+              scan={...scan,hints:{...scan.hints,setCode:first.code,setName:first.name},query:`${first.code} ${scan.hints.number}`,queries:[`${first.code} ${scan.hints.number}`,...scan.queries]};
+            }
+          }catch{/* OCR evidence still feeds the broad ranked result list. */}
         }
-        setScanDraft({imageUri:uris[0]??'',scan,setSuggestions});setScreen('confirmation');return;
+        await searchWithScan(scan.query||scan.hints.name||scan.hints.number||q,scan);return;
       }
       await searchWithScan(q.trim());
     } catch (e) { setError(e instanceof Error ? e.message : 'Something went wrong.'); setScreen(uri ? 'camera' : 'home'); }
@@ -153,7 +161,6 @@ export default function App() {
   if (!session) return <AuthPlaceholder configured />;
   if (screen === 'camera') return <CameraScreen onClose={() => setScreen('home')} onPhoto={(paths:string[],liveScan?:ScanText|null)=>lookup('',paths.map(path=>`file://${path}`),liveScan)} error={error} />;
   if (screen === 'analyzing') return <Analyzing onHome={()=>setScreen('home')}/>;
-  if(screen==='confirmation'&&scanDraft)return <ScanConfirmation draft={scanDraft} onConfirm={(scan)=>{setScanDraft(null);void searchWithScan(scan.query,scan);}} onRescan={()=>{setScanDraft(null);void openCamera();}} onCancel={()=>{setScanDraft(null);setScreen('home');}}/>;
   if (screen === 'collection') return <CollectionScreen userId={session.user.id} onBack={() => setScreen('home')} onScan={openCamera} onTrade={()=>setScreen('trade')} onSelect={openSavedCard} />;
   if (screen === 'trade') return <TradeBuilderScreen userId={session.user.id} onHome={()=>setScreen('home')} onCollection={()=>setScreen('collection')} onScan={openCamera}/>;
   if (screen === 'matches') return <Matches query={query} cards={matches} onBack={() => setScreen('home')} onCollection={() => setScreen('collection')} onSelect={choose} onSearch={lookup} onScan={openCamera} onTrade={()=>setScreen('trade')} />;
@@ -456,41 +463,6 @@ function ScannerBeam() {
     animation.start(); return () => animation.stop();
   }, [progress]);
   return <Animated.View style={[s.scanLine, { transform: [{ translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [8, SCAN_WIDTH * 88 / 63 - 18] }) }] }]}><LinearGradient colors={['transparent', C.cyan, C.white, C.cyan, 'transparent']} start={{x:0,y:0}} end={{x:1,y:0}} style={StyleSheet.absoluteFill}/></Animated.View>;
-}
-
-function ScanConfirmation({draft,onConfirm,onRescan,onCancel}:{draft:ScanDraft;onConfirm:(scan:ScanText)=>void;onRescan:()=>void;onCancel:()=>void}){
-  const [name,setName]=useState(draft.scan.hints.name??'');
-  const [setValue,setSetValue]=useState(draft.scan.hints.setCode??draft.scan.hints.setName??'');
-  const [number,setNumber]=useState(draft.scan.hints.number??'');
-  const [validation,setValidation]=useState('');
-  const complete=Boolean(name.trim()&&setValue.trim()&&number.trim());
-  const queries=useMemo(()=>[...new Set([
-    setValue.trim()&&number.trim()?`${setValue.trim()} ${number.trim()}`:'',
-    name.trim()&&setValue.trim()?`${name.trim()} ${setValue.trim()}`:'',
-    name.trim()&&number.trim()?`${name.trim()} ${number.trim()}`:'',
-    name.trim(),
-  ].filter(Boolean))],[name,number,setValue]);
-  const confirm=()=>{
-    if(!queries.length){setValidation('Enter at least the card name or collector number.');return;}
-    const knownSet=findSet(setValue.trim());
-    const setLooksCode=/^[A-Za-z]{1,6}\d{0,3}[A-Za-z]?$/.test(setValue.trim());
-    onConfirm({...draft.scan,query:queries[0],queries,hints:{...draft.scan.hints,name:name.trim()||undefined,number:number.trim()||undefined,setCode:knownSet?.code??(setLooksCode?setValue.trim():undefined),setName:knownSet?.name??(!setLooksCode?setValue.trim()||undefined:undefined)}});
-  };
-  return <View style={s.page}><SafeAreaView style={s.safe}><AppHeader title="Confirm scan" onHome={onCancel}/>
-    <KeyboardAvoidingView style={s.safe} behavior={Platform.OS==='ios'?'padding':'height'}>
-      <ScrollView contentContainerStyle={s.confirmScroll} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets showsVerticalScrollIndicator={false}>
-        {draft.imageUri?<Image source={{uri:draft.imageUri}} style={s.confirmImage} contentFit="contain" transition={0}/>:<View style={[s.confirmImage,s.confirmImageMissing]}><MaterialCommunityIcons name="image-off-outline" size={35} color={C.muted}/><Text style={s.confirmMissingText}>Photo unavailable · review detected text</Text></View>}
-        <View style={s.confirmHeading}><View><Text style={s.confirmEyebrow}>SCAN COMPLETE</Text><Text style={s.confirmTitle}>Check the card details</Text></View><View style={s.confirmConfidence}><Feather name={complete?'check':'edit-3'} size={13} color={complete?C.green:C.yellow}/><Text style={[s.confirmConfidenceText,{color:complete?C.green:C.yellow}]}>{complete?'HIGH':'REVIEW'}</Text></View></View>
-        <Text style={s.confirmLabel}>CARD NAME</Text><TextInput value={name} onChangeText={setName} placeholder="e.g. Charizard ex" placeholderTextColor="#71839C" style={s.confirmInput} autoCapitalize="words" selectionColor={C.cyan}/>
-        <Text style={s.confirmLabel}>SET</Text><TextInput value={setValue} onChangeText={setSetValue} placeholder="e.g. OBF or Obsidian Flames" placeholderTextColor="#71839C" style={s.confirmInput} autoCapitalize="characters" selectionColor={C.cyan}/>
-        {!!draft.setSuggestions.length&&<View style={s.setSuggestions}><Text style={s.setSuggestionHelp}>POSSIBLE SETS · TAP TO SELECT</Text><View style={s.setSuggestionRow}>{draft.setSuggestions.map(set=><Pressable key={`${set.code}-${set.name}`} onPress={()=>setSetValue(set.code||set.name)} style={[s.setSuggestionChip,(setValue===set.code||setValue===set.name)&&s.setSuggestionChipActive]}><Text style={s.setSuggestionCode}>{set.code||'SET'}</Text><Text style={s.setSuggestionName} numberOfLines={1}>{set.name}</Text></Pressable>)}</View></View>}
-        <Text style={s.confirmLabel}>NUMBER</Text><TextInput value={number} onChangeText={setNumber} placeholder="e.g. 223/197" placeholderTextColor="#71839C" style={s.confirmInput} autoCapitalize="characters" selectionColor={C.cyan}/>
-        {!!validation&&<Text style={s.confirmError}>{validation}</Text>}
-        <Pressable onPress={confirm} style={({pressed})=>[s.confirmButton,pressed&&{opacity:.75}]}><Feather name="search" size={18} color={C.ink}/><Text style={s.confirmButtonText}>FIND CARD</Text></Pressable>
-        <View style={s.confirmSecondary}><Pressable onPress={onRescan} style={s.confirmOutline}><MaterialCommunityIcons name="line-scan" size={16} color={C.cyan}/><Text style={s.confirmOutlineText}>Rescan</Text></Pressable><Pressable onPress={onCancel} style={s.confirmTextButton}><Text style={s.confirmCancelText}>Cancel</Text></Pressable></View>
-      </ScrollView>
-    </KeyboardAvoidingView>
-  </SafeAreaView></View>;
 }
 
 function CameraScreen({ onClose, onPhoto, error }: any) {

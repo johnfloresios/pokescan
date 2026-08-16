@@ -11,9 +11,21 @@ export type ScanHints = {
   rarity?: string; hp?: string; type?: string; stage?: string; evidence?: string;
   collectorTotal?: string; numericEvidence?: string[]; bottomIdentifier?: string;
   cardKind?: 'pokemon'|'trainer'|'energy'; regulationMark?: string;
+  setCandidates?: Array<{code:string;confidence:number}>;
 };
 export type ScanText = { text: string; lines: string[]; query: string; queries: string[]; hints: ScanHints; cardDetected: boolean; ready: boolean };
-const VisionRecognizer = requireOptionalNativeModule<{ recognize(path: string): Promise<{ text: string; bottomText?: string; boxes?: TextBox[]; cardDetected?: boolean; cardBounds?: CardBounds }> }>('CardTextRecognizer');
+export type SetVisualCandidate={code:string;name:string;imageUrl:string};
+export type SetVisualMatch={code:string;name:string;confidence:number;distance:number};
+const VisionRecognizer = requireOptionalNativeModule<{
+  recognize(path: string): Promise<{ text: string; bottomText?: string; boxes?: TextBox[]; cardDetected?: boolean; cardBounds?: CardBounds }>;
+  matchSetSymbols(path:string,candidatesJSON:string):Promise<SetVisualMatch[]>;
+}>('CardTextRecognizer');
+
+export async function matchSetSymbols(uri:string,candidates:readonly SetVisualCandidate[]):Promise<SetVisualMatch[]>{
+  if(!VisionRecognizer?.matchSetSymbols||!uri||!candidates.length)return [];
+  try{return await VisionRecognizer.matchSetSymbols(uri.replace('file://',''),JSON.stringify(candidates.slice(0,5)));}
+  catch{return [];}
+}
 
 export function scanCompleteness(scan:ScanText){
   let score=Math.min(30,scan.lines.length*2);
@@ -325,7 +337,7 @@ export async function recognizeBestCard(uris:readonly string[]):Promise<ScanText
     catch(error){lastError=error;}
   }
   if(!scans.length)throw lastError instanceof Error?lastError:new Error('No readable card text was detected.');
-  // Partial results intentionally survive: the confirmation screen lets the
-  // user correct a title, set code, or number instead of restarting forever.
+  // Partial results intentionally survive and feed a broad ranked match list
+  // instead of restarting the camera or entering another scan cycle.
   return mergeFrameScans(scans);
 }

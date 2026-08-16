@@ -137,7 +137,106 @@ public class CardTextRecognizerModule: Module {
         } catch { promise.reject("VISION_ERROR", error.localizedDescription) }
       }
     }
+
+    AsyncFunction("matchSetSymbols") { (path: String, candidatesJSON: String, promise: Promise) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          guard let source = UIImage(contentsOfFile: path)?.normalizedForOCR.cgImage else {
+            promise.reject("SYMBOL_IMAGE_ERROR", "The captured card image could not be read."); return
+          }
+          let flattened = detectAndFlattenCard(cgImage: source) ?? source
+          guard let data = candidatesJSON.data(using: .utf8),
+                let candidates = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            promise.reject("SYMBOL_INPUT_ERROR", "Set candidates were invalid."); return
+          }
+          let references = downloadReferenceImages(candidates: Array(candidates.prefix(5)))
+          var results: [[String: Any]] = []
+          for (index, candidate) in candidates.prefix(5).enumerated() {
+            guard let reference = references[index],
+                  let distance = symbolRegionDistance(captured: flattened, reference: reference) else { continue }
+            // Feature-print distance is zero for identical regions. Require a
+            // genuinely close visual match; JS also checks the winner's margin.
+            let confidence = max(0.0, min(1.0, exp(-Double(distance) / 11.0)))
+            results.append([
+              "code": candidate["code"] as? String ?? "",
+              "name": candidate["name"] as? String ?? "",
+              "confidence": confidence,
+              "distance": Double(distance)
+            ])
+          }
+          results.sort { ($0["distance"] as? Double ?? 999) < ($1["distance"] as? Double ?? 999) }
+          promise.resolve(results)
+        } catch { promise.reject("SYMBOL_MATCH_ERROR", error.localizedDescription) }
+      }
+    }
   }
+}
+
+private func downloadReferenceImages(candidates: [[String: Any]]) -> [Int: CGImage] {
+  let configuration = URLSessionConfiguration.ephemeral
+  configuration.timeoutIntervalForRequest = 1.5
+  configuration.timeoutIntervalForResource = 2.0
+  configuration.urlCache = URLCache(memoryCapacity: 8_000_000, diskCapacity: 32_000_000, diskPath: "nicepull-set-symbols")
+  configuration.requestCachePolicy = .returnCacheDataElseLoad
+  let session = URLSession(configuration: configuration)
+  let group = DispatchGroup()
+  let lock = NSLock()
+  var images: [Int: CGImage] = [:]
+  for (index, candidate) in candidates.enumerated() {
+    guard let text = candidate["imageUrl"] as? String, let url = URL(string: text) else { continue }
+    group.enter()
+    session.dataTask(with: url) { data, _, _ in
+      defer { group.leave() }
+      guard let data, let image = UIImage(data: data)?.normalizedForOCR.cgImage else { return }
+      lock.lock(); images[index] = image; lock.unlock()
+    }.resume()
+  }
+  _ = group.wait(timeout: .now() + 2.2)
+  session.invalidateAndCancel()
+  return images
+}
+
+private func detectAndFlattenCard(cgImage: CGImage) -> CGImage? {
+  let request = VNDetectRectanglesRequest()
+  request.maximumObservations = 3
+  request.minimumConfidence = 0.45
+  request.minimumAspectRatio = 0.53
+  request.maximumAspectRatio = 0.84
+  request.minimumSize = 0.14
+  request.quadratureTolerance = 24
+  let handler = VNImageRequestHandler(cgImage: cgImage, orientation: .up)
+  try? handler.perform([request])
+  guard let card = request.results?.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height }) else { return nil }
+  return perspectiveCorrect(cgImage: cgImage, rectangle: card)
+}
+
+private func featurePrint(cgImage: CGImage, region: CGRect) -> VNFeaturePrintObservation? {
+  let input = CIImage(cgImage: cgImage)
+  let extent = input.extent
+  let crop = CGRect(x: extent.minX + region.minX * extent.width, y: extent.minY + region.minY * extent.height, width: region.width * extent.width, height: region.height * extent.height).intersection(extent)
+  guard !crop.isEmpty,
+        let cropped = CIContext(options: [.cacheIntermediates: false]).createCGImage(input.cropped(to: crop), from: crop) else { return nil }
+  let request = VNGenerateImageFeaturePrintRequest()
+  try? VNImageRequestHandler(cgImage: cropped, orientation: .up).perform([request])
+  return request.results?.first as? VNFeaturePrintObservation
+}
+
+private func symbolRegionDistance(captured: CGImage, reference: CGImage) -> Float? {
+  // Set-symbol placement changed across eras, so compare three small regions:
+  // modern bottom-left, classic lower-right, and the classic artwork edge.
+  let regions = [
+    CGRect(x: 0.00, y: 0.00, width: 0.58, height: 0.24),
+    CGRect(x: 0.54, y: 0.18, width: 0.46, height: 0.28),
+    CGRect(x: 0.64, y: 0.36, width: 0.36, height: 0.25)
+  ]
+  var distances: [Float] = []
+  for region in regions {
+    guard let left = featurePrint(cgImage: captured, region: region),
+          let right = featurePrint(cgImage: reference, region: region) else { continue }
+    var distance: Float = 0
+    if (try? left.computeDistance(&distance, to: right)) != nil { distances.append(distance) }
+  }
+  return distances.min()
 }
 
 private func enhancedForTinyText(cgImage: CGImage) -> CGImage? {
